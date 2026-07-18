@@ -23,10 +23,25 @@ def _document_title(pdf_path: str, doc) -> str:
     return os.path.splitext(os.path.basename(pdf_path))[0]
 
 
-def convert(pdf_path: str, output_path: str, image_dir: str, verbose: bool = True):
+def default_output_path(pdf_path: str) -> str:
+    """Deriva la ruta del EPUB: mismo nombre y carpeta que el PDF, extensión
+    .epub. Sirve para la GUI, donde el usuario solo elige el PDF."""
+    base = os.path.splitext(pdf_path)[0]
+    return base + ".epub"
+
+
+def convert(
+    pdf_path: str,
+    output_path: str,
+    image_dir: str,
+    verbose: bool = True,
+    on_log=None,
+):
     def log(msg: str) -> None:
         if verbose:
             print(msg, file=sys.stderr)
+        if on_log is not None:
+            on_log(msg)
 
     # --- Fase 1: extracción cruda ---
     log("· Fase 1: extrayendo spans de texto…")

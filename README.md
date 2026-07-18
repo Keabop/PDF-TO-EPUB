@@ -24,6 +24,23 @@ rasterizado), [`ebooklib`](https://github.com/aerkalov/ebooklib) (EPUB) y
 
 ## Uso
 
+### Opción A — Interfaz gráfica (la más simple)
+
+```bash
+python gui.py
+```
+
+Se abre una ventana: apretás **«Seleccionar PDF…»**, elegís el archivo y luego
+**«Convertir a EPUB»**. Eso es todo. El EPUB se guarda junto al PDF, con el
+mismo nombre (`documento.pdf` → `documento.epub`), y la ventana muestra el
+progreso en vivo. Con documentos grandes la conversión corre en segundo plano,
+así que la ventana no se congela.
+
+> Tkinter viene incluido con las instalaciones estándar de Python en Windows y
+> macOS. En Linux puede hacer falta `sudo apt install python3-tk`.
+
+### Opción B — Línea de comandos
+
 ```bash
 python main.py --input samples/documento.pdf --output output/documento.epub
 ```

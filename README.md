@@ -95,9 +95,9 @@ El flujo son seis fases encadenadas, cada una en su módulo bajo `src/`:
 |------|--------|----------|
 | 1 | `extractor.py` | Extrae spans de texto con bbox / fuente / tamaño / negrita-cursiva vía `page.get_text("dict")`. |
 | 2 | `denoise.py` | Elimina headers/footers/numeración: texto repetido en la misma posición del margen en >70% de las páginas. |
-| 5 | `visuals.py` | Detecta **figuras** (imágenes embebidas + dibujos vectoriales, rasterizadas a PNG), **fórmulas** (líneas cortas/centradas o con fuentes matemáticas, recortadas como imagen) y **tablas** (`find_tables()` → `<table>` HTML reflowable). Asocia captions por proximidad + regex. |
+| 5 | `visuals.py` | Detecta **figuras** (imágenes embebidas + dibujos vectoriales que no estén cubiertos por texto) y **tablas** (`find_tables()` → `<table>` HTML reflowable). La detección de **fórmulas como imagen** está **desactivada por defecto** (`--formulas-as-images` para activarla): el heurístico es poco fiable y termina rasterizando texto normal. Asocia captions por proximidad + regex. |
 | 3 | `layout.py` | Detecta 1 o 2 columnas por página (histograma de coordenadas x) y reordena los spans en orden de lectura humano, intercalando bloques a ancho completo. |
-| 4 | `structure.py` | Clusteriza por (tamaño de fuente, negrita) para inferir la jerarquía de títulos; arma capítulos y fusiona líneas del cuerpo en párrafos (resolviendo guiones de corte). Intercala los bloques visuales por su posición. |
+| 4 | `structure.py` | Usa el **índice/marcadores embebidos del PDF** (`get_toc()`) como fuente autoritativa de capítulos y secciones; si el PDF no trae marcadores, cae al heurístico de tamaño de fuente. Fusiona líneas del cuerpo en párrafos (resolviendo guiones de corte) e intercala los bloques visuales por su posición. |
 | 6 | `epub_builder.py` | Genera el `.epub` con `ebooklib`: un XHTML por capítulo, CSS con unidades relativas (`em`/`%`, nunca `px`), TOC navegable (NCX + Nav) e imágenes embebidas. |
 
 `main.py` orquesta las fases en orden. Nota: la fase 5 (visuales) corre antes de

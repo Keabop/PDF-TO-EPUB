@@ -1,11 +1,16 @@
 """Fase 4 — Jerarquía de títulos, párrafos y capítulos.
 
-Clusteriza las líneas por (tamaño de fuente, negrita) en todo el documento.
-Los tamaños más grandes y menos frecuentes son headings; el más frecuente es
-el cuerpo. Con eso arma Chapters y fusiona líneas del cuerpo en párrafos.
+Fuente de la estructura, en orden de preferencia:
+
+1. El índice/marcadores embebidos del PDF (`outline`). Es lo más confiable en
+   libros académicos: da títulos y niveles reales de capítulos y secciones.
+2. Si el PDF no trae marcadores, se cae al heurístico de tamaño de fuente:
+   clusteriza las líneas por (tamaño, negrita) y toma los tamaños más grandes
+   y menos frecuentes como headings.
 """
 
-from collections import Counter
+import re
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Optional
 
@@ -155,10 +160,25 @@ def build_document_tree(
     ordered_spans: list[TextSpan],
     title: str = "Documento",
     visual_blocks: Optional[list[Block]] = None,
+    outline: Optional[list[tuple[int, str, int]]] = None,
 ) -> Document:
-    """Clusteriza por (font_size, is_bold), arma Chapters y fusiona líneas
-    del cuerpo en Blocks kind='paragraph'. Los `visual_blocks` (figuras,
-    fórmulas, tablas) se intercalan por su posición (page_num, y0)."""
+    """Arma el árbol del documento. Si el PDF trae `outline` (marcadores),
+    se usa como fuente autoritativa de capítulos/secciones; si no, se cae al
+    heurístico de tamaño de fuente. Los `visual_blocks` se intercalan por su
+    posición (page_num, y0)."""
+    if outline:
+        return _build_from_outline(
+            ordered_spans, outline, title, visual_blocks or []
+        )
+    return _build_from_font_sizes(ordered_spans, title, visual_blocks)
+
+
+def _build_from_font_sizes(
+    ordered_spans: list[TextSpan],
+    title: str,
+    visual_blocks: Optional[list[Block]],
+) -> Document:
+    """Heurístico de respaldo: infiere headings por tamaño de fuente."""
     lines = _merge_spans_into_lines(ordered_spans)
     body_size = _body_font_size(lines)
     level_map = _heading_level_map(lines, body_size)
@@ -200,17 +220,20 @@ def build_document_tree(
 
 
 def _assemble_chapters(
-    items: list[tuple[int, float, str, object]], title: str
+    items: list[tuple[int, float, str, object]],
+    title: str,
+    top_level: int = 1,
 ) -> Document:
-    """Recorre los items en orden y los reparte en capítulos: cada heading de
-    nivel 1 abre un capítulo nuevo; lo anterior al primer nivel-1 va a un
-    capítulo inicial con el título del documento."""
+    """Recorre los items en orden y los reparte en capítulos: cada heading del
+    nivel superior (`top_level`) abre un capítulo nuevo; lo anterior al primero
+    va a un capítulo inicial con el título del documento. Los headings de nivel
+    más profundo quedan como bloques dentro del capítulo."""
     document = Document(title=title)
     current = Chapter(title=title)  # capítulo inicial (frontmatter / intro)
     order = 0
 
     for page_num, y0, kind, payload in items:
-        if kind == "heading" and payload[1] == 1:  # type: ignore[index]
+        if kind == "heading" and payload[1] <= top_level:  # type: ignore[index]
             if current.blocks:
                 document.chapters.append(current)
             current = Chapter(title=payload[0])  # type: ignore[index]
@@ -249,3 +272,108 @@ def _assemble_chapters(
     if not document.chapters:
         document.chapters = [Chapter(title=title)]
     return document
+
+
+# --------------------------------------------------------------------------- #
+# Construcción a partir del outline embebido (fuente autoritativa)
+# --------------------------------------------------------------------------- #
+
+def _norm(text: str) -> str:
+    """Normaliza para comparar títulos: minúsculas y solo alfanuméricos."""
+    return re.sub(r"[^0-9a-záéíóúñü]", "", text.lower())
+
+
+def _paragraph_items(
+    lines: list[_Line],
+) -> list[tuple[int, float, str, object]]:
+    """Fusiona líneas de cuerpo en párrafos, cada uno con su propia posición
+    (page, y0), abriendo párrafo nuevo ante salto vertical grande o cambio de
+    página."""
+    items: list[tuple[int, float, str, object]] = []
+    if not lines:
+        return items
+    heights = [l.y1 - l.y0 for l in lines if l.y1 > l.y0]
+    median_h = sorted(heights)[len(heights) // 2] if heights else 12.0
+
+    cur_text = ""
+    cur_page: Optional[int] = None
+    cur_y: Optional[float] = None
+    prev: Optional[_Line] = None
+
+    def flush() -> None:
+        nonlocal cur_text
+        if cur_text.strip() and cur_page is not None:
+            items.append((cur_page, cur_y, "paragraph", cur_text))
+        cur_text = ""
+
+    for line in lines:
+        if prev is not None and (
+            line.page_num != prev.page_num
+            or (line.y0 - prev.y1) > median_h * _PARAGRAPH_GAP_FACTOR
+        ):
+            flush()
+        if not cur_text:
+            cur_page, cur_y = line.page_num, line.y0
+        cur_text = _dehyphenate_join(cur_text, line.text)
+        prev = line
+    flush()
+    return items
+
+
+def _match_heading_line(
+    htitle: str, page: int, by_page: dict[int, list[_Line]], consumed: set[int]
+) -> Optional[tuple[int, float]]:
+    """Busca la línea del cuerpo que corresponde a un título del outline (en su
+    página o la siguiente) para ubicar el heading con precisión y evitar que el
+    título se duplique como párrafo. Devuelve (page, y0) o None."""
+    tnorm = _norm(htitle)
+    if len(tnorm) < 4:
+        return None
+    prefix = tnorm[:14]
+    for pg in (page, page + 1):
+        for line in by_page.get(pg, []):
+            if id(line) in consumed:
+                continue
+            lnorm = _norm(line.text)
+            if not lnorm:
+                continue
+            if lnorm.startswith(prefix) or prefix in lnorm:
+                consumed.add(id(line))
+                return pg, line.y0
+    return None
+
+
+def _build_from_outline(
+    ordered_spans: list[TextSpan],
+    outline: list[tuple[int, str, int]],
+    title: str,
+    visual_blocks: list[Block],
+) -> Document:
+    lines = _merge_spans_into_lines(ordered_spans)
+    by_page: dict[int, list[_Line]] = defaultdict(list)
+    for line in lines:
+        by_page[line.page_num].append(line)
+    for page_lines in by_page.values():
+        page_lines.sort(key=lambda l: l.y0)
+
+    top_level = min(level for level, _, _ in outline)
+    consumed: set[int] = set()
+    items: list[tuple[int, float, str, object]] = []
+
+    for level, htitle, page in outline:
+        match = _match_heading_line(htitle, page, by_page, consumed)
+        if match is not None:
+            pg, y = match
+        else:
+            # Sin coincidencia: ubicar al tope de su página.
+            pg, y = page, -1.0
+        items.append((pg, y, "heading", (htitle, level)))
+
+    body_lines = [line for line in lines if id(line) not in consumed]
+    items.extend(_paragraph_items(body_lines))
+
+    for vb in visual_blocks:
+        items.append((vb.page_num, vb.y0, "visual", vb))
+
+    items.sort(key=lambda it: (it[0], it[1]))
+    return _assemble_chapters(items, title, top_level)

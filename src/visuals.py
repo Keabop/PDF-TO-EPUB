@@ -143,8 +143,9 @@ def _detect_formula_lines(
         is_short = width < column_width * 0.5
         centered = abs((x0 + x1) / 2 - page_width / 2) < page_width * 0.12
         # Señal fuerte: fuente matemática. Señal débil: corta + centrada +
-        # con dígitos/operadores.
-        looks_formulaic = bool(re.search(r"[=+\-×·/^_∑∫√≤≥≈∞]", text))
+        # con operadores matemáticos claros (sin '-' ni '/', que abundan en
+        # texto normal: guiones, fechas, "hacer/comprar", etc.).
+        looks_formulaic = bool(re.search(r"[=×·∑∫√≤≥≈≠∞±∈∀∃]", text))
         if has_math_font or (is_short and centered and looks_formulaic):
             # Padding para no cortar sub/superíndices.
             regions.append((x0 - 4, y0 - 4, x1 + 4, y1 + 4))
@@ -157,10 +158,16 @@ def extract_visuals(
     out_dir: str,
     page_index: int,
     settings: ImageSettings,
+    detect_formulas: bool = False,
 ) -> tuple[list[Block], set[int]]:
     """Detecta figuras, fórmulas y tablas en la página y las convierte en
     Blocks. Devuelve (blocks, ids_de_spans_consumidos) para que el texto de
-    captions no se duplique como párrafo."""
+    captions no se duplique como párrafo.
+
+    `detect_formulas` está desactivado por defecto: la detección de fórmulas
+    por heurística es poco fiable y termina rasterizando texto normal (líneas
+    de índice, palabras con guiones) como imágenes. Solo conviene activarlo en
+    documentos con mucha matemática real."""
     blocks: list[Block] = []
     consumed_span_ids: set[int] = set()
     page_rect = page.rect
@@ -193,10 +200,18 @@ def extract_visuals(
             )
         )
 
-    # --- Figuras (imágenes + dibujos vectoriales) ---
-    fig_rects = _merge_overlapping(
-        _image_regions(page) + _drawing_regions(page)
-    )
+    # --- Figuras (imágenes embebidas + dibujos vectoriales) ---
+    # Las imágenes embebidas (get_images) son de fiar; los clusters de dibujos
+    # vectoriales pueden envolver texto (subrayados, filetes) y convertir un
+    # bloque de texto en imagen. Por eso a los dibujos les exigimos que NO
+    # estén cubiertos mayoritariamente por texto.
+    raster_rects = _image_regions(page)
+    drawing_rects = [
+        r
+        for r in _drawing_regions(page)
+        if _text_coverage(r, spans) < 0.25
+    ]
+    fig_rects = _merge_overlapping(raster_rects + drawing_rects)
     for f_idx, rect in enumerate(fig_rects):
         # Ignora regiones diminutas (líneas, viñetas) o dentro de una tabla.
         if rect.width < 20 or rect.height < 20:
@@ -222,7 +237,10 @@ def extract_visuals(
             )
         )
 
-    # --- Fórmulas ---
+    # --- Fórmulas (opt-in) ---
+    if not detect_formulas:
+        return blocks, consumed_span_ids
+
     # Excluye spans que ya caen dentro de figuras o tablas.
     exclude = fig_rects + table_rects
     free_spans = [
@@ -282,6 +300,21 @@ def _escape(text: str) -> str:
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
+
+
+def _text_coverage(rect: pymupdf.Rect, spans: list[TextSpan]) -> float:
+    """Fracción del área de `rect` cubierta por texto. Alta (>~0.25) indica
+    que la región es un bloque de texto, no una figura."""
+    area = rect.width * rect.height
+    if area <= 0:
+        return 1.0
+    covered = 0.0
+    for s in spans:
+        sr = pymupdf.Rect(s.bbox)
+        inter = sr & rect
+        if not inter.is_empty:
+            covered += inter.width * inter.height
+    return min(covered / area, 1.0)
 
 
 def _mostly_inside(inner: pymupdf.Rect, outer: pymupdf.Rect) -> bool:

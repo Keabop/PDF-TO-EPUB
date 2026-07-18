@@ -63,3 +63,23 @@ def open_document(pdf_path: str) -> pymupdf.Document:
     """Abre el documento para que otras fases (visuals) puedan rasterizar
     páginas y buscar imágenes/tablas sin reabrir el archivo."""
     return pymupdf.open(pdf_path)
+
+
+def extract_outline(doc: pymupdf.Document) -> list[tuple[int, str, int]]:
+    """Devuelve el índice/marcadores embebidos del PDF como
+    (nivel, título, page_index_0based). Es la fuente MÁS confiable para el
+    TOC de un libro académico; vacío si el PDF no trae marcadores."""
+    outline: list[tuple[int, str, int]] = []
+    try:
+        toc = doc.get_toc(simple=True)  # [ [level, title, page_1based], ... ]
+    except Exception:
+        return outline
+    for entry in toc:
+        if len(entry) < 3:
+            continue
+        level, title, page = entry[0], entry[1], entry[2]
+        title = (title or "").strip()
+        if not title or page is None or page < 1:
+            continue
+        outline.append((int(level), title, int(page) - 1))
+    return outline

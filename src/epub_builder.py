@@ -152,13 +152,32 @@ def build_epub(document: Document, output_path: str) -> None:
         embedded_images[path] = internal
 
     chapters_html: list[epub.EpubHtml] = []
+    toc: list = []
     for c_idx, chapter in enumerate(document.chapters):
         file_name = f"chap_{c_idx:03d}_{_slug(chapter.title, str(c_idx))}.xhtml"
         parts = [f"<h1>{escape(chapter.title)}</h1>"]
+        sub_links: list[epub.Link] = []
+        h_count = 0
         for block in chapter.blocks:
-            html = _block_to_html(block, embedded_images)
-            if html:
-                parts.append(html)
+            if block.kind == "heading":
+                # Subtítulo dentro del capítulo: con ancla para el TOC anidado.
+                h_count += 1
+                hid = f"h{h_count}"
+                level = min(max(block.level or 2, 2), 4)
+                parts.append(
+                    f'<h{level} id="{hid}">{escape(block.text or "")}</h{level}>'
+                )
+                sub_links.append(
+                    epub.Link(
+                        f"{file_name}#{hid}",
+                        block.text or "",
+                        f"c{c_idx}_{hid}",
+                    )
+                )
+            else:
+                html = _block_to_html(block, embedded_images)
+                if html:
+                    parts.append(html)
         item = epub.EpubHtml(
             title=chapter.title,
             file_name=file_name,
@@ -169,8 +188,13 @@ def build_epub(document: Document, output_path: str) -> None:
         book.add_item(item)
         chapters_html.append(item)
 
-    # TOC + navegación (un entry por capítulo).
-    book.toc = list(chapters_html)
+        # TOC anidado: el capítulo, y colgando sus subtítulos si los hay.
+        if sub_links:
+            toc.append((item, sub_links))
+        else:
+            toc.append(item)
+
+    book.toc = toc
     book.add_item(epub.EpubNcx())
     book.add_item(epub.EpubNav())
     book.spine = ["nav", *chapters_html]

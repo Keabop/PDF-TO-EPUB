@@ -10,7 +10,7 @@ import sys
 
 from src.denoise import strip_boilerplate
 from src.epub_builder import build_epub
-from src.extractor import extract_raw_spans, open_document
+from src.extractor import extract_outline, extract_raw_spans, open_document
 from src.imaging import DEFAULT_PRESET, PRESETS, get_settings
 from src.layout import order_pages
 from src.structure import build_document_tree
@@ -38,6 +38,7 @@ def convert(
     verbose: bool = True,
     on_log=None,
     image_preset: str = DEFAULT_PRESET,
+    formulas_as_images: bool = False,
 ):
     def log(msg: str) -> None:
         if verbose:
@@ -56,6 +57,9 @@ def convert(
     page_widths = {i: doc[i].rect.width for i in range(len(doc))}
     page_heights = {i: doc[i].rect.height for i in range(len(doc))}
     title = _document_title(pdf_path, doc)
+    outline = extract_outline(doc)
+    if outline:
+        log(f"  índice embebido: {len(outline)} entradas")
 
     # --- Fase 2: filtrado de ruido ---
     log("· Fase 2: quitando headers/footers/paginación…")
@@ -73,7 +77,8 @@ def convert(
         page = doc[page_index]
         spans = pages.get(page_index, [])
         blocks, consumed = extract_visuals(
-            page, spans, image_dir, page_index, settings
+            page, spans, image_dir, page_index, settings,
+            detect_formulas=formulas_as_images,
         )
         visual_blocks.extend(blocks)
         # Progreso por página: útil en documentos largos (500+ págs).
@@ -91,9 +96,10 @@ def convert(
         ordered_spans.extend(ordered[page_index])
 
     # --- Fase 4: jerarquía de títulos y capítulos ---
-    log("· Fase 4: construyendo jerarquía de capítulos…")
+    fuente = "índice embebido" if outline else "tamaño de fuente"
+    log(f"· Fase 4: construyendo jerarquía de capítulos… (fuente: {fuente})")
     document = build_document_tree(
-        ordered_spans, title=title, visual_blocks=visual_blocks
+        ordered_spans, title=title, visual_blocks=visual_blocks, outline=outline
     )
     log(f"  {len(document.chapters)} capítulos")
 
@@ -126,6 +132,13 @@ def main(argv=None) -> int:
         "'calidad' (más nítido, más pesado) o 'minimo' (archivo más chico, "
         "escala de grises). Por defecto: %(default)s",
     )
+    parser.add_argument(
+        "--formulas-as-images",
+        action="store_true",
+        help="Recorta fórmulas como imágenes (heurístico poco fiable, puede "
+        "convertir texto normal en imagen). Desactivado por defecto: las "
+        "fórmulas quedan como texto.",
+    )
     parser.add_argument("--quiet", "-q", action="store_true", help="Sin logs")
     args = parser.parse_args(argv)
 
@@ -143,6 +156,7 @@ def main(argv=None) -> int:
         image_dir,
         verbose=not args.quiet,
         image_preset=args.images,
+        formulas_as_images=args.formulas_as_images,
     )
     return 0
 

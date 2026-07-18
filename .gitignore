@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+
+# Salidas generadas
+output/*.epub
+output/images/*.png
+output/images/*.jpg
+output/images/*.jpeg
+
+# Muestras (PDFs del usuario) — no versionar binarios pesados
+samples/*.pdf

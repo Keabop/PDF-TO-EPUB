@@ -1,17 +1,20 @@
 """Fase 5 — Figuras, fórmulas y tablas.
 
 - Figuras: imágenes embebidas + dibujos vectoriales agrupados en regiones,
-  rasterizados a PNG.
+  rasterizados y guardados optimizados como JPEG (ver imaging.py).
 - Fórmulas: líneas cortas/centradas con whitespace vertical o fuentes
-  matemáticas; se recortan como imagen (no MathML).
+  matemáticas; se recortan como imagen PNG en escala de grises (no MathML).
 - Tablas: page.find_tables() nativo -> <table> HTML reflowable.
+
+El formato/compresión de las imágenes lo controla ImageSettings (imaging.py),
+para mantener el peso del EPUB bajo el límite de Send to Kindle.
 """
 
-import os
 import re
 
 import pymupdf
 
+from .imaging import ImageSettings, save_optimized
 from .models import Block, TextSpan
 
 _CAPTION_RE = re.compile(
@@ -22,7 +25,6 @@ _CAPTION_RE = re.compile(
 # Fuentes típicas de composición matemática.
 _MATH_FONT_HINTS = ("symbol", "cmmi", "cmsy", "cmex", "math", "mathematicalpi")
 
-_RASTER_DPI = 300
 _CAPTION_MAX_GAP = 40.0  # puntos: distancia máx. figura<->caption
 
 
@@ -68,13 +70,14 @@ def _rasterize(
     page: pymupdf.Page,
     rect: pymupdf.Rect,
     out_dir: str,
-    name: str,
+    name_stem: str,
+    kind: str,
+    settings: ImageSettings,
 ) -> str:
-    os.makedirs(out_dir, exist_ok=True)
-    pix = page.get_pixmap(clip=rect, dpi=_RASTER_DPI)
-    path = os.path.join(out_dir, name)
-    pix.save(path)
-    return path
+    """Rasteriza la región y la guarda optimizada (formato/compresión según
+    el tipo). Devuelve la ruta final (la extensión la decide imaging)."""
+    pix = page.get_pixmap(clip=rect, dpi=settings.dpi)
+    return save_optimized(pix, out_dir, name_stem, kind, settings)
 
 
 def _image_regions(page: pymupdf.Page) -> list[pymupdf.Rect]:
@@ -153,6 +156,7 @@ def extract_visuals(
     spans: list[TextSpan],
     out_dir: str,
     page_index: int,
+    settings: ImageSettings,
 ) -> tuple[list[Block], set[int]]:
     """Detecta figuras, fórmulas y tablas en la página y las convierte en
     Blocks. Devuelve (blocks, ids_de_spans_consumidos) para que el texto de
@@ -199,9 +203,9 @@ def extract_visuals(
             continue
         if any(_mostly_inside(rect, tr) for tr in table_rects):
             continue
-        name = f"p{page_index:04d}_fig{f_idx:02d}.png"
+        name_stem = f"p{page_index:04d}_fig{f_idx:02d}"
         try:
-            path = _rasterize(page, rect, out_dir, name)
+            path = _rasterize(page, rect, out_dir, name_stem, "figure", settings)
         except Exception:
             continue
         caption, cap_spans = _find_caption(tuple(rect), spans)
@@ -232,9 +236,9 @@ def extract_visuals(
         rect = pymupdf.Rect(region)
         if rect.width < 10 or rect.height < 6:
             continue
-        name = f"p{page_index:04d}_eq{m_idx:02d}.png"
+        name_stem = f"p{page_index:04d}_eq{m_idx:02d}"
         try:
-            path = _rasterize(page, rect, out_dir, name)
+            path = _rasterize(page, rect, out_dir, name_stem, "formula", settings)
         except Exception:
             continue
         # Marca los spans de esa fórmula como consumidos.

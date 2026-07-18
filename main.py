@@ -11,6 +11,7 @@ import sys
 from src.denoise import strip_boilerplate
 from src.epub_builder import build_epub
 from src.extractor import extract_raw_spans, open_document
+from src.imaging import DEFAULT_PRESET, PRESETS, get_settings
 from src.layout import order_pages
 from src.structure import build_document_tree
 from src.visuals import extract_visuals
@@ -36,12 +37,15 @@ def convert(
     image_dir: str,
     verbose: bool = True,
     on_log=None,
+    image_preset: str = DEFAULT_PRESET,
 ):
     def log(msg: str) -> None:
         if verbose:
             print(msg, file=sys.stderr)
         if on_log is not None:
             on_log(msg)
+
+    settings = get_settings(image_preset)
 
     # --- Fase 1: extracción cruda ---
     log("· Fase 1: extrayendo spans de texto…")
@@ -62,13 +66,19 @@ def convert(
 
     # --- Fase 5 (visuales) por página: se hace antes de ordenar el texto para
     #     poder marcar los spans consumidos (captions, fórmulas) ---
-    log("· Fase 5: detectando figuras, fórmulas y tablas…")
+    log(f"· Fase 5: detectando figuras, fórmulas y tablas… (imágenes: {image_preset})")
     visual_blocks = []
-    for page_index in range(len(doc)):
+    total_pages = len(doc)
+    for page_index in range(total_pages):
         page = doc[page_index]
         spans = pages.get(page_index, [])
-        blocks, consumed = extract_visuals(page, spans, image_dir, page_index)
+        blocks, consumed = extract_visuals(
+            page, spans, image_dir, page_index, settings
+        )
         visual_blocks.extend(blocks)
+        # Progreso por página: útil en documentos largos (500+ págs).
+        if total_pages >= 50 and (page_index + 1) % 25 == 0:
+            log(f"    página {page_index + 1}/{total_pages}")
         # Quita del texto los spans ya representados como visual (captions/eqs).
         pages[page_index] = [s for s in spans if id(s) not in consumed]
     log(f"  {len(visual_blocks)} bloques visuales")
@@ -108,6 +118,14 @@ def main(argv=None) -> int:
         help="Carpeta para los recortes de figuras/fórmulas "
         "(por defecto: <dir-de-salida>/images)",
     )
+    parser.add_argument(
+        "--images",
+        choices=list(PRESETS.keys()),
+        default=DEFAULT_PRESET,
+        help="Preset de compresión de imágenes: 'equilibrado' (recomendado), "
+        "'calidad' (más nítido, más pesado) o 'minimo' (archivo más chico, "
+        "escala de grises). Por defecto: %(default)s",
+    )
     parser.add_argument("--quiet", "-q", action="store_true", help="Sin logs")
     args = parser.parse_args(argv)
 
@@ -119,7 +137,13 @@ def main(argv=None) -> int:
         os.path.dirname(os.path.abspath(args.output)), "images"
     )
 
-    convert(args.input, args.output, image_dir, verbose=not args.quiet)
+    convert(
+        args.input,
+        args.output,
+        image_dir,
+        verbose=not args.quiet,
+        image_preset=args.images,
+    )
     return 0
 
 

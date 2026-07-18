@@ -39,6 +39,10 @@ así que la ventana no se congela.
 > Tkinter viene incluido con las instalaciones estándar de Python en Windows y
 > macOS. En Linux puede hacer falta `sudo apt install python3-tk`.
 
+En el menú **«Tamaño del archivo»** elegís el nivel de compresión de imágenes
+(ver [Tamaño del EPUB](#tamaño-del-epub-figuras-y-fórmulas) abajo). Al terminar,
+la ventana te muestra el peso final del `.epub`.
+
 ### Opción B — Línea de comandos
 
 ```bash
@@ -52,10 +56,36 @@ Opciones:
 | `--input`, `-i` | PDF de entrada (obligatorio) |
 | `--output`, `-o` | EPUB de salida (obligatorio) |
 | `--image-dir` | Carpeta para recortes de figuras/fórmulas (por defecto `<salida>/images`) |
+| `--images` | Preset de compresión: `equilibrado` (por defecto), `calidad` o `minimo` |
 | `--quiet`, `-q` | Sin logs de progreso |
 
 Abrí el `.epub` resultante en Calibre / Apple Books para una primera pasada, y
 luego mandalo por Send to Kindle para la prueba final en el dispositivo real.
+
+## Tamaño del EPUB (figuras y fórmulas)
+
+Las figuras y fórmulas se rasterizan como imágenes; sin compresión un PDF de
+texto liviano puede generar un EPUB **enorme** (p. ej. un PDF de 7 MB / 800
+páginas → EPUB de 71 MB). Eso importa porque **Send to Kindle** tiene límites de
+tamaño:
+
+| Método de envío | Límite | 
+|-----------------|--------|
+| Email (`…@kindle.com`) | ~50 MB por correo |
+| App de escritorio / web (`send.amazon.com`) | hasta 200 MB |
+
+Para controlarlo, el pipeline comprime las imágenes con Pillow según un preset
+(`--images` en la CLI, menú «Tamaño del archivo» en la GUI):
+
+| Preset | DPI | Figuras | Fórmulas | Uso |
+|--------|-----|---------|----------|-----|
+| `calidad` | 220 | JPEG q90 color | PNG gris | Máxima nitidez, archivo más pesado |
+| `equilibrado` *(default)* | 150 | JPEG q82 color | PNG gris | Recomendado: se ve bien en Kindle y pesa poco |
+| `minimo` | 110 | JPEG q72 **gris** | PNG gris | El archivo más chico posible |
+
+Bajar de 300 DPI/PNG a 150 DPI/JPEG suele reducir el EPUB **~10–20×** sin pérdida
+visible en la pantalla e-ink del Kindle. Las fórmulas se guardan siempre en PNG
+gris (texto negro sobre blanco: nítido y liviano).
 
 ## Arquitectura del pipeline
 

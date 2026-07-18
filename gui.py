@@ -52,6 +52,26 @@ class ConverterApp:
         )
         self.file_label.pack(side="left", padx=12)
 
+        # --- Selector de tamaño/calidad de imágenes ---
+        quality_frame = ttk.Frame(root)
+        quality_frame.pack(fill="x", **pad)
+        ttk.Label(quality_frame, text="Tamaño del archivo:").pack(side="left")
+        # Etiqueta amigable -> nombre de preset interno.
+        self._preset_labels = {
+            "Equilibrado (recomendado)": "equilibrado",
+            "Máxima calidad (más pesado)": "calidad",
+            "Mínimo tamaño (gris)": "minimo",
+        }
+        self.quality_var = tk.StringVar(value="Equilibrado (recomendado)")
+        self.quality_combo = ttk.Combobox(
+            quality_frame,
+            textvariable=self.quality_var,
+            values=list(self._preset_labels.keys()),
+            state="readonly",
+            width=28,
+        )
+        self.quality_combo.pack(side="left", padx=12)
+
         # --- Botón principal ---
         self.convert_btn = ttk.Button(
             root,
@@ -100,20 +120,22 @@ class ConverterApp:
         self.running = True
         self.convert_btn.configure(state="disabled")
         self.select_btn.configure(state="disabled")
+        self.quality_combo.configure(state="disabled")
         self.progress.start(12)
         self._clear_log()
 
         output_path = default_output_path(self.pdf_path)
         image_dir = os.path.join(os.path.dirname(output_path), "images")
+        preset = self._preset_labels.get(self.quality_var.get(), "equilibrado")
 
         thread = threading.Thread(
             target=self._run_conversion,
-            args=(self.pdf_path, output_path, image_dir),
+            args=(self.pdf_path, output_path, image_dir, preset),
             daemon=True,
         )
         thread.start()
 
-    def _run_conversion(self, pdf_path, output_path, image_dir) -> None:
+    def _run_conversion(self, pdf_path, output_path, image_dir, preset) -> None:
         """Corre en un hilo aparte. Comunica resultados por la cola."""
         try:
             convert(
@@ -122,6 +144,7 @@ class ConverterApp:
                 image_dir,
                 verbose=False,
                 on_log=self.log_queue.put,
+                image_preset=preset,
             )
             self.log_queue.put(f"__DONE__{output_path}")
         except Exception as exc:  # noqa: BLE001 - mostramos el error al usuario
@@ -147,10 +170,12 @@ class ConverterApp:
         self.running = False
         self.convert_btn.configure(state="normal")
         self.select_btn.configure(state="normal")
-        self._append_log(f"\n✓ Listo: {output_path}")
+        self.quality_combo.configure(state="readonly")
+        size_mb = self._file_size_mb(output_path)
+        self._append_log(f"\n✓ Listo: {output_path} ({size_mb})")
         messagebox.showinfo(
             "Conversión completa",
-            f"EPUB generado:\n{output_path}\n\n"
+            f"EPUB generado:\n{output_path}\n\nTamaño: {size_mb}\n\n"
             "Mandalo por Send to Kindle para leerlo en el dispositivo.",
         )
 
@@ -159,8 +184,17 @@ class ConverterApp:
         self.running = False
         self.convert_btn.configure(state="normal")
         self.select_btn.configure(state="normal")
+        self.quality_combo.configure(state="readonly")
         self._append_log(f"\n✗ Error: {message}")
         messagebox.showerror("Error en la conversión", message)
+
+    @staticmethod
+    def _file_size_mb(path: str) -> str:
+        try:
+            mb = os.path.getsize(path) / (1024 * 1024)
+            return f"{mb:.1f} MB"
+        except OSError:
+            return "tamaño desconocido"
 
     # --- helpers de log ---
     def _append_log(self, text: str) -> None:

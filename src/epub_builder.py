@@ -64,6 +64,16 @@ th, td {
     text-align: left;
 }
 th { background: #eee; }
+aside.margin-note {
+    display: block;
+    margin: 1em 0;
+    padding: 0.5em 0.8em;
+    border-left: 3px solid #999;
+    background: #f2f2f2;
+    font-size: 0.9em;
+    font-style: italic;
+    color: #333;
+}
 """
 
 
@@ -80,6 +90,11 @@ def _block_to_html(block: Block, embedded_images: dict[str, str]) -> str:
 
     if block.kind == "paragraph":
         return f"<p>{escape(block.text or '')}</p>"
+
+    if block.kind == "aside":
+        # Nota al margen (cita, recuadro "Conceptos Clave", etc.): recuadro
+        # visualmente separado del cuerpo.
+        return f'<aside class="margin-note">{escape(block.text or "")}</aside>'
 
     if block.kind == "formula" and block.image_path:
         src = embedded_images.get(block.image_path)

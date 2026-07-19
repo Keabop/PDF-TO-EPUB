@@ -70,6 +70,7 @@ class _Line:
     y1: float
     block_index: int
     read_order: int
+    is_aside: bool
 
 
 def _merge_spans_into_lines(spans: list[TextSpan]) -> list[_Line]:
@@ -98,6 +99,7 @@ def _merge_spans_into_lines(spans: list[TextSpan]) -> list[_Line]:
                     y1=max(s.bbox[3] for s in buffer),
                     block_index=buffer[0].block_index,
                     read_order=min(s.read_order for s in buffer),
+                    is_aside=buffer[0].is_aside,
                 )
             )
         buffer.clear()
@@ -276,9 +278,9 @@ def _assemble_chapters(
                 text=text,
                 y0=y0,
             )
-        elif kind == "paragraph":
+        elif kind in ("paragraph", "aside"):
             block = Block(
-                kind="paragraph",
+                kind=kind,  # type: ignore[arg-type]
                 order_index=order,
                 page_num=page_num,
                 text=payload,  # type: ignore[arg-type]
@@ -312,9 +314,13 @@ def _norm(text: str) -> str:
 def _paragraph_items(
     lines: list[_Line],
 ) -> list[tuple[int, float, str, object]]:
-    """Fusiona líneas de cuerpo en párrafos (por sangría de primera línea /
-    saltos / página), cada uno con su clave de orden de lectura
-    (page, read_order)."""
+    """Convierte líneas en items de contenido:
+
+    - Cuerpo: párrafos reconstruidos por sangría de primera línea / saltos.
+    - Margen (is_aside): todas las líneas de margen contiguas de una página se
+      agrupan en UN solo bloque 'aside' (recuadro), para no quedar fragmentadas.
+
+    Cada item lleva su clave de orden de lectura (page, read_order)."""
     items: list[tuple[int, float, str, object]] = []
     if not lines:
         return items
@@ -325,20 +331,46 @@ def _paragraph_items(
     cur_order: Optional[float] = None
     prev: Optional[_Line] = None
 
-    def flush() -> None:
-        nonlocal cur_text
+    aside_buf: list[_Line] = []
+
+    def flush_body() -> None:
+        nonlocal cur_text, prev
         if cur_text.strip() and cur_page is not None:
             items.append((cur_page, cur_order, "paragraph", cur_text))
         cur_text = ""
+        prev = None
+
+    def flush_aside() -> None:
+        if not aside_buf:
+            return
+        text = ""
+        for l in aside_buf:
+            if l.text.strip():
+                text = _dehyphenate_join(text, l.text.strip())
+        if text:
+            items.append(
+                (aside_buf[0].page_num, aside_buf[0].read_order, "aside", text)
+            )
+        aside_buf.clear()
 
     for line in lines:
+        if line.is_aside:
+            flush_body()
+            if aside_buf and aside_buf[-1].page_num != line.page_num:
+                flush_aside()
+            aside_buf.append(line)
+            continue
+
+        flush_aside()
         if _starts_paragraph(line, prev, body_left):
-            flush()
+            flush_body()
         if not cur_text:
             cur_page, cur_order = line.page_num, line.read_order
         cur_text = _dehyphenate_join(cur_text, line.text)
         prev = line
-    flush()
+
+    flush_body()
+    flush_aside()
     return items
 
 

@@ -18,11 +18,14 @@ class TextSpan:
     #                        de PyMuPDF (cada bloque ≈ un párrafo)
     read_order: int = 0    # posición final dentro de la página tras ordenar
     #                        (cuerpo primero, notas al margen al final)
+    is_aside: bool = False  # material de margen (citas, recuadros, barras)
 
 
 @dataclass
 class Block:
-    kind: Literal["heading", "paragraph", "figure", "formula", "table", "caption"]
+    kind: Literal[
+        "heading", "paragraph", "figure", "formula", "table", "caption", "aside"
+    ]
     order_index: int
     page_num: int
     level: Optional[int] = None        # solo headings: 1=capítulo, 2=sección...

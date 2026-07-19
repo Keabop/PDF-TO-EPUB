@@ -60,6 +60,8 @@ def order_page(spans: list[TextSpan], page_width: float) -> list[TextSpan]:
         is_narrow = width < page_width * 0.28
         starts_left_of_body = x0 < left_threshold
         if main_left > 0 and is_narrow and starts_left_of_body:
+            for s in spans_b:
+                s.is_aside = True
             asides.append(spans_b)
         else:
             body.append(spans_b)

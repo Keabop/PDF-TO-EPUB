@@ -33,9 +33,13 @@ def extract_raw_spans(pdf_path: str) -> dict[int, list[TextSpan]]:
         raw = page.get_text("dict")
         spans: list[TextSpan] = []
 
+        block_index = 0
         for block in raw["blocks"]:
             if block.get("type") != 0:  # 0 = texto, 1 = imagen
                 continue
+            # El orden de `raw["blocks"]` es el orden de lectura nativo de
+            # PyMuPDF (cuerpo primero, notas al margen después); lo preservamos
+            # en block_index para respetarlo aguas abajo.
             for line in block["lines"]:
                 for span in line["spans"]:
                     text = span["text"]
@@ -50,8 +54,10 @@ def extract_raw_spans(pdf_path: str) -> dict[int, list[TextSpan]]:
                             is_bold=_is_bold(span),
                             is_italic=_is_italic(span),
                             page_num=page_num,
+                            block_index=block_index,
                         )
                     )
+            block_index += 1
 
         pages[page_num] = spans
 

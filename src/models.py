@@ -14,6 +14,10 @@ class TextSpan:
     is_italic: bool
     page_num: int
     column_index: int = 0
+    block_index: int = 0   # índice del bloque en el orden de lectura nativo
+    #                        de PyMuPDF (cada bloque ≈ un párrafo)
+    read_order: int = 0    # posición final dentro de la página tras ordenar
+    #                        (cuerpo primero, notas al margen al final)
 
 
 @dataclass

@@ -20,6 +20,43 @@ _LINE_TOLERANCE = 3.0       # agrupar spans en una línea (misma y0 aprox.)
 _SIZE_EPSILON = 0.6         # diferencia mínima de tamaño para ser heading
 # Un salto vertical mayor a este múltiplo de la altura de línea abre párrafo.
 _PARAGRAPH_GAP_FACTOR = 0.6
+# Un x0 mayor al margen del cuerpo + esto = primera línea sangrada = párrafo
+# nuevo; menor al margen - esto = línea "afuera" (nota al margen, título).
+_INDENT_THRESHOLD = 6.0
+_OUTDENT_THRESHOLD = 10.0
+
+
+def _body_left_by_page(lines: list["_Line"]) -> dict[int, float]:
+    """Margen izquierdo del cuerpo por página: el x0 más frecuente entre las
+    líneas (las líneas de continuación, que son mayoría). Sirve para detectar
+    la sangría de primera línea que marca inicio de párrafo."""
+    by_page: dict[int, Counter] = defaultdict(Counter)
+    for line in lines:
+        by_page[line.page_num][round(line.x0)] += 1
+    return {
+        pg: float(counter.most_common(1)[0][0])
+        for pg, counter in by_page.items()
+    }
+
+
+def _starts_paragraph(
+    line: "_Line", prev: Optional["_Line"], body_left: dict[int, float]
+) -> bool:
+    """Decide si `line` inicia un párrafo nuevo respecto de `prev`, usando
+    sangría de primera línea, cambio de página y salto vertical."""
+    if prev is None:
+        return True
+    if line.page_num != prev.page_num:
+        return True
+    left = body_left.get(line.page_num, line.x0)
+    if line.x0 >= left + _INDENT_THRESHOLD:   # primera línea sangrada
+        return True
+    if line.x0 <= left - _OUTDENT_THRESHOLD:  # afuera del cuerpo (aside/título)
+        return True
+    line_h = max(line.y1 - line.y0, 1.0)
+    if (line.y0 - prev.y1) > line_h * _PARAGRAPH_GAP_FACTOR:
+        return True
+    return False
 
 
 @dataclass
@@ -28,13 +65,16 @@ class _Line:
     font_size: float
     is_bold: bool
     page_num: int
+    x0: float
     y0: float
     y1: float
+    block_index: int
+    read_order: int
 
 
 def _merge_spans_into_lines(spans: list[TextSpan]) -> list[_Line]:
     """Agrupa spans consecutivos (ya en orden de lectura) que pertenecen a la
-    misma línea física: misma página, misma columna y y0 cercana."""
+    misma línea física: mismo bloque, misma página y y0 cercana."""
     lines: list[_Line] = []
     buffer: list[TextSpan] = []
 
@@ -53,8 +93,11 @@ def _merge_spans_into_lines(spans: list[TextSpan]) -> list[_Line]:
                     font_size=size,
                     is_bold=bold_chars >= total_chars / 2,
                     page_num=buffer[0].page_num,
+                    x0=min(s.bbox[0] for s in buffer),
                     y0=min(s.bbox[1] for s in buffer),
                     y1=max(s.bbox[3] for s in buffer),
+                    block_index=buffer[0].block_index,
+                    read_order=min(s.read_order for s in buffer),
                 )
             )
         buffer.clear()
@@ -64,7 +107,7 @@ def _merge_spans_into_lines(spans: list[TextSpan]) -> list[_Line]:
         if prev is not None:
             same_line = (
                 span.page_num == prev.page_num
-                and span.column_index == prev.column_index
+                and span.block_index == prev.block_index
                 and abs(span.bbox[1] - prev.bbox[1]) <= _LINE_TOLERANCE
             )
             if not same_line:
@@ -119,41 +162,22 @@ def _classify(
     return "paragraph", None
 
 
+_HYPHENS = ("-", "­", "‐")  # guion normal, blando, unicode
+
+
 def _dehyphenate_join(acc: str, nxt: str) -> str:
     """Une dos líneas del mismo párrafo, resolviendo guiones de corte."""
-    if acc.endswith("-") and not acc.endswith((" -", "--")):
-        return acc[:-1] + nxt
     if not acc:
-        return nxt
+        return nxt.lstrip()
+    stripped = acc.rstrip()
+    # Guion de corte de palabra (no un guion suelto tipo " -" ni "--").
+    if (
+        stripped
+        and stripped[-1] in _HYPHENS
+        and not stripped.endswith((" -", "--"))
+    ):
+        return stripped[:-1] + nxt.lstrip()
     return acc + " " + nxt
-
-
-def _lines_to_paragraphs(lines: list[_Line]) -> list[str]:
-    """Fusiona líneas de cuerpo consecutivas en párrafos, abriendo uno nuevo
-    ante un salto vertical grande o un cambio de página."""
-    if not lines:
-        return []
-    heights = [l.y1 - l.y0 for l in lines if l.y1 > l.y0]
-    median_h = sorted(heights)[len(heights) // 2] if heights else 12.0
-
-    paragraphs: list[str] = []
-    current = ""
-    prev: Optional[_Line] = None
-    for line in lines:
-        if prev is not None:
-            gap = line.y0 - prev.y1
-            new_para = (
-                line.page_num != prev.page_num
-                or gap > median_h * _PARAGRAPH_GAP_FACTOR
-            )
-            if new_para:
-                paragraphs.append(current)
-                current = ""
-        current = _dehyphenate_join(current, line.text)
-        prev = line
-    if current:
-        paragraphs.append(current)
-    return [p for p in paragraphs if p.strip()]
 
 
 def build_document_tree(
@@ -191,28 +215,30 @@ def _build_from_font_sizes(
     # emitiendo headings como puntos de corte.
     body_run: list[_Line] = []
 
+    lines_by_page: dict[int, list[_Line]] = defaultdict(list)
+    for line in lines:
+        lines_by_page[line.page_num].append(line)
+    for page_lines in lines_by_page.values():
+        page_lines.sort(key=lambda l: l.y0)
+
     def flush_body() -> None:
-        for para in _lines_to_paragraphs(body_run):
-            first = body_run[0]
-            items.append((first.page_num, first.y0, "paragraph", para))
+        items.extend(_paragraph_items(body_run))
         body_run.clear()
 
     for line in lines:
         kind, level = _classify(line, body_size, level_map)
         if kind == "heading":
             flush_body()
-            items.append((line.page_num, line.y0, "heading", (line.text, level)))
+            items.append(
+                (line.page_num, float(line.read_order), "heading", (line.text, level))
+            )
         else:
-            if body_run and (
-                body_run[-1].page_num != line.page_num
-                or line.y0 - body_run[-1].y1 > (line.y1 - line.y0) * 3
-            ):
-                flush_body()
             body_run.append(line)
     flush_body()
 
     for vb in visual_blocks or []:
-        items.append((vb.page_num, vb.y0, "visual", vb))
+        order = _visual_order_key(vb.page_num, vb.y0, lines_by_page)
+        items.append((vb.page_num, order, "visual", vb))
 
     items.sort(key=lambda it: (it[0], it[1]))
 
@@ -286,34 +312,30 @@ def _norm(text: str) -> str:
 def _paragraph_items(
     lines: list[_Line],
 ) -> list[tuple[int, float, str, object]]:
-    """Fusiona líneas de cuerpo en párrafos, cada uno con su propia posición
-    (page, y0), abriendo párrafo nuevo ante salto vertical grande o cambio de
-    página."""
+    """Fusiona líneas de cuerpo en párrafos (por sangría de primera línea /
+    saltos / página), cada uno con su clave de orden de lectura
+    (page, read_order)."""
     items: list[tuple[int, float, str, object]] = []
     if not lines:
         return items
-    heights = [l.y1 - l.y0 for l in lines if l.y1 > l.y0]
-    median_h = sorted(heights)[len(heights) // 2] if heights else 12.0
+    body_left = _body_left_by_page(lines)
 
     cur_text = ""
     cur_page: Optional[int] = None
-    cur_y: Optional[float] = None
+    cur_order: Optional[float] = None
     prev: Optional[_Line] = None
 
     def flush() -> None:
         nonlocal cur_text
         if cur_text.strip() and cur_page is not None:
-            items.append((cur_page, cur_y, "paragraph", cur_text))
+            items.append((cur_page, cur_order, "paragraph", cur_text))
         cur_text = ""
 
     for line in lines:
-        if prev is not None and (
-            line.page_num != prev.page_num
-            or (line.y0 - prev.y1) > median_h * _PARAGRAPH_GAP_FACTOR
-        ):
+        if _starts_paragraph(line, prev, body_left):
             flush()
         if not cur_text:
-            cur_page, cur_y = line.page_num, line.y0
+            cur_page, cur_order = line.page_num, line.read_order
         cur_text = _dehyphenate_join(cur_text, line.text)
         prev = line
     flush()
@@ -325,7 +347,7 @@ def _match_heading_line(
 ) -> Optional[tuple[int, float]]:
     """Busca la línea del cuerpo que corresponde a un título del outline (en su
     página o la siguiente) para ubicar el heading con precisión y evitar que el
-    título se duplique como párrafo. Devuelve (page, y0) o None."""
+    título se duplique como párrafo. Devuelve (page, read_order) o None."""
     tnorm = _norm(htitle)
     if len(tnorm) < 4:
         return None
@@ -339,8 +361,22 @@ def _match_heading_line(
                 continue
             if lnorm.startswith(prefix) or prefix in lnorm:
                 consumed.add(id(line))
-                return pg, line.y0
+                return pg, float(line.read_order)
     return None
+
+
+def _visual_order_key(
+    page: int, y0: float, lines_by_page: dict[int, list[_Line]]
+) -> float:
+    """Ubica un visual (figura/tabla) en el flujo de lectura de su página: toma
+    el read_order de la última línea del cuerpo que esté por encima del visual.
+    Así la imagen cae junto al párrafo que la precede, no al final."""
+    candidates = [
+        l for l in lines_by_page.get(page, []) if l.y0 <= y0
+    ]
+    if not candidates:
+        return -0.5  # antes del cuerpo de la página
+    return max(l.read_order for l in candidates) + 0.5
 
 
 def _build_from_outline(
@@ -363,17 +399,18 @@ def _build_from_outline(
     for level, htitle, page in outline:
         match = _match_heading_line(htitle, page, by_page, consumed)
         if match is not None:
-            pg, y = match
+            pg, order = match
         else:
             # Sin coincidencia: ubicar al tope de su página.
-            pg, y = page, -1.0
-        items.append((pg, y, "heading", (htitle, level)))
+            pg, order = page, -1.0
+        items.append((pg, order, "heading", (htitle, level)))
 
     body_lines = [line for line in lines if id(line) not in consumed]
     items.extend(_paragraph_items(body_lines))
 
     for vb in visual_blocks:
-        items.append((vb.page_num, vb.y0, "visual", vb))
+        order = _visual_order_key(vb.page_num, vb.y0, by_page)
+        items.append((vb.page_num, order, "visual", vb))
 
     items.sort(key=lambda it: (it[0], it[1]))
     return _assemble_chapters(items, title, top_level)

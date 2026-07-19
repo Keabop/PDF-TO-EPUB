@@ -210,6 +210,56 @@ class PipelineTest(unittest.TestCase):
             convert(pdf, os.path.join(self.tmp, "o.epub"),
                     os.path.join(self.tmp, "img"), verbose=False)
 
+    def test_alternating_header_and_folios_stripped(self):
+        def make(path):
+            doc = pymupdf.open()
+            for pno in range(6):
+                p = doc.new_page(width=W, height=H)
+                # Encabezado que ALTERNA par/impar (como un libro real).
+                head = "TITULO DEL LIBRO" if pno % 2 == 0 else "Nombre del capitulo"
+                p.insert_text((60, 25), head, fontsize=8)
+                p.insert_text((W / 2, H - 25), str(pno + 10), fontsize=9)  # folio
+                p.insert_textbox(pymupdf.Rect(60, 90, 535, 760), BODY * 8, fontsize=11)
+            doc.save(path)
+            doc.close()
+
+        epub = self._convert(make)
+        _, chaps = _read_chapter_texts(epub)
+        allc = "\n".join(chaps.values())
+        self.assertNotIn("TITULO DEL LIBRO", allc)
+        self.assertNotIn("Nombre del capitulo", allc)
+        # ningún folio suelto como párrafo
+        self.assertEqual(re.findall(r"<p>\s*\d{1,3}\s*</p>", allc), [])
+
+    def test_text_box_not_turned_into_image(self):
+        def make(path):
+            doc = pymupdf.open()
+            p = doc.new_page(width=W, height=H)
+            # caja con muchas líneas de texto (tipo índice) => NO es figura
+            p.draw_rect(pymupdf.Rect(60, 100, 535, 500))
+            for i in range(12):
+                p.insert_text((70, 120 + i * 28), f"{i+1}.1 Seccion de ejemplo  {i+10}", fontsize=9)
+            doc.save(path)
+            doc.close()
+
+        epub = self._convert(make)
+        z = zipfile.ZipFile(epub)
+        imgs = [n for n in z.namelist() if "/images/" in n and n.endswith((".png", ".jpg"))]
+        self.assertEqual(imgs, [], "una caja de texto no debe volverse imagen")
+
+    def test_drop_cap_joined(self):
+        from src.structure import _merge_spans_into_lines
+        # Simula capitular: 'C' grande + 'omprensión' normal en la misma zona.
+        from src.models import TextSpan
+        spans = [
+            TextSpan("C", (60, 100, 90, 140), 24.0, "F", False, False, 0,
+                     block_index=0, read_order=0),
+            TextSpan("omprensión del tema", (92, 105, 300, 118), 11.0, "F",
+                     False, False, 0, block_index=1, read_order=1),
+        ]
+        lines = _merge_spans_into_lines(spans)
+        self.assertTrue(any(l.text.startswith("Comprensión") for l in lines))
+
     def test_empty_pages_no_crash(self):
         def make(path):
             doc = pymupdf.open()

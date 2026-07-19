@@ -206,10 +206,13 @@ def extract_visuals(
     # bloque de texto en imagen. Por eso a los dibujos les exigimos que NO
     # estén cubiertos mayoritariamente por texto.
     raster_rects = _image_regions(page)
+    # Un dibujo con MUCHAS líneas de texto adentro (una caja de índice, un
+    # recuadro de contenido) es texto, no una figura: una figura real tiene
+    # pocas etiquetas. Se descarta por cobertura de texto o por nº de líneas.
     drawing_rects = [
         r
         for r in _drawing_regions(page)
-        if _text_coverage(r, spans) < 0.25
+        if _text_coverage(r, spans) < 0.18 and _text_line_count(r, spans) <= 6
     ]
     fig_rects = _merge_overlapping(raster_rects + drawing_rects)
     for f_idx, rect in enumerate(fig_rects):
@@ -315,6 +318,18 @@ def _text_coverage(rect: pymupdf.Rect, spans: list[TextSpan]) -> float:
         if not inter.is_empty:
             covered += inter.width * inter.height
     return min(covered / area, 1.0)
+
+
+def _text_line_count(rect: pymupdf.Rect, spans: list[TextSpan]) -> int:
+    """Número de líneas de texto (bandas verticales) cuyo centro cae dentro de
+    `rect`. Muchas líneas => es un bloque de texto, no una figura."""
+    bands = set()
+    for s in spans:
+        cx = (s.bbox[0] + s.bbox[2]) / 2
+        cy = (s.bbox[1] + s.bbox[3]) / 2
+        if rect.x0 <= cx <= rect.x1 and rect.y0 <= cy <= rect.y1:
+            bands.add(round(s.bbox[1] / 4))
+    return len(bands)
 
 
 def _mostly_inside(inner: pymupdf.Rect, outer: pymupdf.Rect) -> bool:

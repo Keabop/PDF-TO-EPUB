@@ -144,7 +144,45 @@ def _merge_spans_into_lines(spans: list[TextSpan]) -> list[_Line]:
         buffer.append(span)
         prev = span
     flush()
-    return lines
+    return _join_drop_caps(lines)
+
+
+def _join_drop_caps(lines: list["_Line"]) -> list["_Line"]:
+    """Une capitulares: una letra inicial grande y suelta (drop cap) se pega a
+    la línea siguiente, para que 'C' + 'omprensión' -> 'Comprensión' en vez de
+    quedar como una línea de una sola letra."""
+    if len(lines) < 2:
+        return lines
+    counter: Counter = Counter()
+    for l in lines:
+        counter[round(l.font_size)] += len(l.text)
+    body = counter.most_common(1)[0][0] if counter else 10
+
+    out: list[_Line] = []
+    i = 0
+    while i < len(lines):
+        cur = lines[i]
+        text = cur.text.strip()
+        is_dropcap = (
+            len(text) == 1
+            and text.isalpha()
+            and cur.font_size >= body * 1.6
+            and i + 1 < len(lines)
+            and lines[i + 1].page_num == cur.page_num
+        )
+        if is_dropcap:
+            nxt = lines[i + 1]
+            nxt.text = text + nxt.text.lstrip()
+            nxt.x0 = min(cur.x0, nxt.x0)
+            nxt.y0 = min(cur.y0, nxt.y0)
+            nxt.read_order = min(cur.read_order, nxt.read_order)
+            nxt.block_index = cur.block_index
+            out.append(nxt)
+            i += 2
+        else:
+            out.append(cur)
+            i += 1
+    return out
 
 
 def _dominant(weighted: list[tuple[float, int]]) -> float:

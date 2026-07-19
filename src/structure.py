@@ -26,29 +26,55 @@ _INDENT_THRESHOLD = 6.0
 _OUTDENT_THRESHOLD = 10.0
 
 
-def _body_left_by_page(lines: list["_Line"]) -> dict[int, float]:
-    """Margen izquierdo del cuerpo por página: el x0 más frecuente entre las
-    líneas (las líneas de continuación, que son mayoría). Sirve para detectar
-    la sangría de primera línea que marca inicio de párrafo."""
-    by_page: dict[int, Counter] = defaultdict(Counter)
+_COLUMN_GAP = 60.0  # separación horizontal mínima entre columnas (puntos)
+
+
+def _column_lefts_by_page(lines: list["_Line"]) -> dict[int, list[float]]:
+    """Márgenes izquierdos por página, UNO POR COLUMNA. Agrupa los x0 de las
+    líneas del cuerpo (excluye asides) en columnas separadas por un hueco
+    horizontal grande, y toma el x0 mínimo de cada columna como su margen de
+    continuación. Necesario para no fragmentar el texto en documentos a varias
+    columnas (si no, una columna se leería como 'sangría' de la otra)."""
+    by_page: dict[int, list[float]] = defaultdict(list)
     for line in lines:
-        by_page[line.page_num][round(line.x0)] += 1
-    return {
-        pg: float(counter.most_common(1)[0][0])
-        for pg, counter in by_page.items()
-    }
+        if not line.is_aside:
+            by_page[line.page_num].append(line.x0)
+    result: dict[int, list[float]] = {}
+    for pg, xs in by_page.items():
+        xs = sorted(xs)
+        groups: list[list[float]] = [[xs[0]]]
+        for x in xs[1:]:
+            if x - groups[-1][-1] > _COLUMN_GAP:
+                groups.append([x])
+            else:
+                groups[-1].append(x)
+        result[pg] = [min(g) for g in groups]
+    return result
+
+
+def _column_left_for(line: "_Line", col_lefts: dict[int, list[float]]) -> float:
+    """Margen de la columna a la que pertenece la línea (el mayor margen de
+    columna que no la sobrepasa)."""
+    lefts = col_lefts.get(line.page_num)
+    if not lefts:
+        return line.x0
+    candidates = [l for l in lefts if l <= line.x0 + 2]
+    return max(candidates) if candidates else lefts[0]
 
 
 def _starts_paragraph(
-    line: "_Line", prev: Optional["_Line"], body_left: dict[int, float]
+    line: "_Line", prev: Optional["_Line"], col_lefts: dict[int, list[float]]
 ) -> bool:
     """Decide si `line` inicia un párrafo nuevo respecto de `prev`, usando
-    sangría de primera línea, cambio de página y salto vertical."""
+    sangría de primera línea (relativa a su columna), cambio de página y salto
+    vertical."""
     if prev is None:
         return True
     if line.page_num != prev.page_num:
         return True
-    left = body_left.get(line.page_num, line.x0)
+    left = _column_left_for(line, col_lefts)
+    if left != _column_left_for(prev, col_lefts):  # cambio de columna
+        return True
     if line.x0 >= left + _INDENT_THRESHOLD:   # primera línea sangrada
         return True
     if line.x0 <= left - _OUTDENT_THRESHOLD:  # afuera del cuerpo (aside/título)
@@ -349,7 +375,7 @@ def _paragraph_items(
     items: list[tuple[int, float, str, object]] = []
     if not lines:
         return items
-    body_left = _body_left_by_page(lines)
+    col_lefts = _column_lefts_by_page(lines)
 
     cur_text = ""
     cur_page: Optional[int] = None
@@ -402,7 +428,7 @@ def _paragraph_items(
             )
             continue
 
-        if _starts_paragraph(line, prev, body_left):
+        if _starts_paragraph(line, prev, col_lefts):
             flush_body()
         if not cur_text:
             cur_page, cur_order = line.page_num, line.read_order

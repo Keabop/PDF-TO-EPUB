@@ -17,6 +17,29 @@ from src.structure import build_document_tree
 from src.visuals import extract_visuals
 
 
+def _validate_pdf(pdf_path: str) -> None:
+    """Abre el PDF y verifica que se pueda procesar; lanza ValueError con un
+    mensaje claro si está dañado, protegido con contraseña o vacío."""
+    import pymupdf
+
+    try:
+        doc = pymupdf.open(pdf_path)
+    except Exception as exc:
+        raise ValueError(
+            f"No se pudo abrir el PDF (¿archivo dañado o no es un PDF?): {exc}"
+        ) from exc
+    try:
+        if doc.needs_pass:
+            raise ValueError(
+                "El PDF está protegido con contraseña. Quitá la protección "
+                "(por ejemplo imprimiéndolo a PDF) y volvé a intentar."
+            )
+        if doc.page_count == 0:
+            raise ValueError("El PDF no tiene páginas.")
+    finally:
+        doc.close()
+
+
 def _document_title(pdf_path: str, doc) -> str:
     meta_title = (doc.metadata or {}).get("title") if doc else None
     if meta_title and meta_title.strip():
@@ -48,10 +71,17 @@ def convert(
 
     settings = get_settings(image_preset)
 
+    # --- Validación temprana del PDF (errores claros para el usuario) ---
+    _validate_pdf(pdf_path)
+
     # --- Fase 1: extracción cruda ---
     log("· Fase 1: extrayendo spans de texto…")
     pages = extract_raw_spans(pdf_path)
-    log(f"  {sum(len(v) for v in pages.values())} spans en {len(pages)} páginas")
+    total_spans = sum(len(v) for v in pages.values())
+    log(f"  {total_spans} spans en {len(pages)} páginas")
+    if pages and total_spans < 5 * len(pages):
+        log("  ⚠ el PDF casi no tiene texto seleccionable: ¿es un escaneo? "
+            "El EPUB saldrá con poco o nada de texto (esta herramienta no hace OCR).")
 
     doc = open_document(pdf_path)
     page_widths = {i: doc[i].rect.width for i in range(len(doc))}
@@ -150,14 +180,18 @@ def main(argv=None) -> int:
         os.path.dirname(os.path.abspath(args.output)), "images"
     )
 
-    convert(
-        args.input,
-        args.output,
-        image_dir,
-        verbose=not args.quiet,
-        image_preset=args.images,
-        formulas_as_images=args.formulas_as_images,
-    )
+    try:
+        convert(
+            args.input,
+            args.output,
+            image_dir,
+            verbose=not args.quiet,
+            image_preset=args.images,
+            formulas_as_images=args.formulas_as_images,
+        )
+    except ValueError as exc:  # errores esperables (PDF inválido, etc.)
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 

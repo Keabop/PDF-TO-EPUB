@@ -5,6 +5,7 @@ EpubNcx + EpubNav para el TOC, y EpubImage por cada figura/fórmula.
 """
 
 import os
+import unicodedata
 from html import escape
 
 from ebooklib import epub
@@ -100,7 +101,11 @@ def _nest_headings(headings: list[tuple[int, "epub.Link"]]):
 
 
 def _slug(text: str, fallback: str) -> str:
-    keep = "".join(c if c.isalnum() else "-" for c in text.lower())
+    """Nombre de archivo interno del EPUB: sólo ASCII [a-z0-9-] para máxima
+    compatibilidad entre lectores (títulos en cirílico/CJK caen al fallback)."""
+    normalized = unicodedata.normalize("NFKD", text.lower())
+    ascii_text = normalized.encode("ascii", "ignore").decode("ascii")
+    keep = "".join(c if c.isalnum() else "-" for c in ascii_text)
     keep = "-".join(filter(None, keep.split("-")))
     return keep[:40] or fallback
 

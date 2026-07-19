@@ -96,8 +96,8 @@ El flujo son seis fases encadenadas, cada una en su módulo bajo `src/`:
 | 1 | `extractor.py` | Extrae spans de texto con bbox / fuente / tamaño / negrita-cursiva vía `page.get_text("dict")`. |
 | 2 | `denoise.py` | Elimina headers/footers/numeración: texto repetido en la misma posición del margen en >70% de las páginas. |
 | 5 | `visuals.py` | Detecta **figuras** (imágenes embebidas + dibujos vectoriales que no estén cubiertos por texto) y **tablas** (`find_tables()` → `<table>` HTML reflowable). La detección de **fórmulas como imagen** está **desactivada por defecto** (`--formulas-as-images` para activarla): el heurístico es poco fiable y termina rasterizando texto normal. Asocia captions por proximidad + regex. |
-| 3 | `layout.py` | Detecta 1 o 2 columnas por página (histograma de coordenadas x) y reordena los spans en orden de lectura humano, intercalando bloques a ancho completo. |
-| 4 | `structure.py` | Usa el **índice/marcadores embebidos del PDF** (`get_toc()`) como fuente autoritativa de capítulos y secciones; si el PDF no trae marcadores, cae al heurístico de tamaño de fuente. Fusiona líneas del cuerpo en párrafos (resolviendo guiones de corte) e intercala los bloques visuales por su posición. |
+| 3 | `layout.py` | Respeta el **orden de bloques nativo de PyMuPDF** (cuerpo primero, notas al margen después) y desplaza el material de margen angosto al final de la página, en vez de re-ordenar por (y, x). |
+| 4 | `structure.py` | Usa el **índice/marcadores embebidos del PDF** (`get_toc()`) como fuente autoritativa de capítulos; detecta subtítulos numerados (`1.1`, `1.1.1`) por numeración + fuente mayor; si no hay marcadores, cae al heurístico de tamaño de fuente. Reconstruye párrafos por **sangría de primera línea por columna** (no fragmenta multi-columna), resuelve guiones de corte, y agrupa las notas al margen en recuadros `<aside>`. |
 | 6 | `epub_builder.py` | Genera el `.epub` con `ebooklib`: un XHTML por capítulo, CSS con unidades relativas (`em`/`%`, nunca `px`), TOC navegable (NCX + Nav) e imágenes embebidas. |
 
 `main.py` orquesta las fases en orden. Nota: la fase 5 (visuales) corre antes de
@@ -107,15 +107,28 @@ fórmulas) y que no se dupliquen como párrafos de texto.
 El modelo de datos compartido está en `src/models.py` (`TextSpan`, `Block`,
 `Chapter`, `Document`).
 
-## Alcance y limitaciones (MVP)
+## Pruebas
+
+```bash
+python -m unittest discover tests      # o: python tests/test_pipeline.py
+```
+
+La batería (`tests/test_pipeline.py`) genera PDFs sintéticos y verifica orden de
+lectura a dos columnas, TOC desde el outline, detección de subtítulos, tablas
+como HTML, que no se rasterice texto, dehyphenation, y manejo de errores
+(protegido / dañado / vacío).
+
+## Alcance y limitaciones
 
 - El PDF de entrada **no** está escaneado: es texto seleccionable con layout de
-  imprenta. No hay OCR.
-- Las **fórmulas se manejan como imágenes recortadas**, no como MathML/LaTeX —
-  el soporte de MathML en Kindle es pobre en la práctica. Reconstruir fórmulas
-  como texto matemático real es trabajo futuro (ver `PLAN.md`, Fase 8).
-- El MVP está calibrado contra un documento específico; generalizarlo a
-  cualquier PDF es backlog.
+  imprenta. No hay OCR (si detecta un PDF casi sin texto, avisa que parece un
+  escaneo).
+- Las **fórmulas** quedan como texto por defecto; el recorte como imagen es
+  opt-in (`--formulas-as-images`) porque el heurístico es poco fiable.
+- El pipeline es **heurístico**: funciona en un rango amplio de libros (una/dos
+  columnas, con o sin índice embebido, con figuras/tablas), pero un layout muy
+  atípico puede necesitar ajustes. Errores esperables (PDF protegido, dañado,
+  vacío) se reportan con un mensaje claro en vez de romper.
 
 ## Definition of Done
 

@@ -77,6 +77,28 @@ aside.margin-note {
 """
 
 
+def _nest_headings(headings: list[tuple[int, "epub.Link"]]):
+    """Arma un árbol de TOC a partir de (nivel, Link): 1.1.1 cuelga de 1.1,
+    que cuelga del capítulo. Devuelve la lista anidada que espera ebooklib
+    (un Link suelto si no tiene hijos, o (Link, [hijos]) si los tiene)."""
+    root: list = []
+    stack: list[tuple[int, list]] = [(0, root)]
+    for level, link in headings:
+        while len(stack) > 1 and stack[-1][0] >= level:
+            stack.pop()
+        children: list = []
+        stack[-1][1].append([link, children])
+        stack.append((level, children))
+
+    def convert(entries: list):
+        out = []
+        for link, children in entries:
+            out.append((link, convert(children)) if children else link)
+        return out
+
+    return convert(root)
+
+
 def _slug(text: str, fallback: str) -> str:
     keep = "".join(c if c.isalnum() else "-" for c in text.lower())
     keep = "-".join(filter(None, keep.split("-")))
@@ -171,7 +193,7 @@ def build_epub(document: Document, output_path: str) -> None:
     for c_idx, chapter in enumerate(document.chapters):
         file_name = f"chap_{c_idx:03d}_{_slug(chapter.title, str(c_idx))}.xhtml"
         parts = [f"<h1>{escape(chapter.title)}</h1>"]
-        sub_links: list[epub.Link] = []
+        sub_headings: list[tuple[int, epub.Link]] = []
         h_count = 0
         for block in chapter.blocks:
             if block.kind == "heading":
@@ -182,11 +204,14 @@ def build_epub(document: Document, output_path: str) -> None:
                 parts.append(
                     f'<h{level} id="{hid}">{escape(block.text or "")}</h{level}>'
                 )
-                sub_links.append(
-                    epub.Link(
-                        f"{file_name}#{hid}",
-                        block.text or "",
-                        f"c{c_idx}_{hid}",
+                sub_headings.append(
+                    (
+                        level,
+                        epub.Link(
+                            f"{file_name}#{hid}",
+                            block.text or "",
+                            f"c{c_idx}_{hid}",
+                        ),
                     )
                 )
             else:
@@ -203,9 +228,9 @@ def build_epub(document: Document, output_path: str) -> None:
         book.add_item(item)
         chapters_html.append(item)
 
-        # TOC anidado: el capítulo, y colgando sus subtítulos si los hay.
-        if sub_links:
-            toc.append((item, sub_links))
+        # TOC anidado: el capítulo con sus subtítulos jerarquizados por nivel.
+        if sub_headings:
+            toc.append((item, _nest_headings(sub_headings)))
         else:
             toc.append(item)
 

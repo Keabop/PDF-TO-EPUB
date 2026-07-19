@@ -43,7 +43,11 @@ def extract_raw_spans(pdf_path: str) -> dict[int, list[TextSpan]]:
             for line in block["lines"]:
                 for span in line["spans"]:
                     text = span["text"]
-                    if not text.strip():
+                    # Se conservan los spans de sólo-espacio: en títulos con
+                    # tracking (letras espaciadas) el espacio entre palabras
+                    # viene como span aparte; descartarlo pega las palabras
+                    # ("LA NATURALEZA" -> "LANATURALEZA").
+                    if text == "":
                         continue
                     spans.append(
                         TextSpan(

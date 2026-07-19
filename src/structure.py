@@ -82,7 +82,8 @@ def _merge_spans_into_lines(spans: list[TextSpan]) -> list[_Line]:
     def flush() -> None:
         if not buffer:
             return
-        text = "".join(s.text for s in buffer).strip()
+        # Colapsa espacios repetidos (quedan al conservar spans de sólo-espacio).
+        text = re.sub(r"\s+", " ", "".join(s.text for s in buffer)).strip()
         if text:
             # Tamaño/negrita dominantes ponderados por longitud de texto.
             size = _dominant([(s.font_size, len(s.text)) for s in buffer])
@@ -125,6 +126,27 @@ def _dominant(weighted: list[tuple[float, int]]) -> float:
     for value, weight in weighted:
         counter[value] += weight
     return counter.most_common(1)[0][0]
+
+
+# Subtítulo numerado: "1.1 …", "1.1.1 …" (al menos un punto entre números).
+_SECTION_NUM_RE = re.compile(r"^(\d+(?:\.\d+)+)\b")
+
+
+def _subheading_level(line: "_Line", body_size: float) -> Optional[int]:
+    """Detecta subtítulos de sección DENTRO de un capítulo (los que no vienen
+    en el outline). Devuelve el nivel (2, 3, …) o None.
+
+    Señal principal: numeración "1.1"/"1.1.1" + fuente más grande que el
+    cuerpo (así se descarta un cruce como "1.3, cualquier enfoque…", que va en
+    tamaño de cuerpo). El nivel sale de la profundidad de la numeración."""
+    if line.is_aside:
+        return None
+    text = line.text.strip()
+    m = _SECTION_NUM_RE.match(text)
+    if m and line.font_size >= body_size + 1.0:
+        depth = m.group(1).count(".") + 1  # "1.1"->2, "1.1.1"->3
+        return min(max(depth, 2), 4)
+    return None
 
 
 def _body_font_size(lines: list[_Line]) -> float:
@@ -313,10 +335,13 @@ def _norm(text: str) -> str:
 
 def _paragraph_items(
     lines: list[_Line],
+    body_size: Optional[float] = None,
 ) -> list[tuple[int, float, str, object]]:
     """Convierte líneas en items de contenido:
 
     - Cuerpo: párrafos reconstruidos por sangría de primera línea / saltos.
+    - Subtítulos: si se pasa `body_size`, las líneas que parecen subtítulos de
+      sección ("1.1 …", "1.1.1 …" en fuente mayor) se emiten como 'heading'.
     - Margen (is_aside): todas las líneas de margen contiguas de una página se
       agrupan en UN solo bloque 'aside' (recuadro), para no quedar fragmentadas.
 
@@ -362,6 +387,21 @@ def _paragraph_items(
             continue
 
         flush_aside()
+
+        # ¿Es un subtítulo de sección dentro del capítulo?
+        level = (
+            _subheading_level(line, body_size)
+            if body_size is not None
+            else None
+        )
+        if level is not None:
+            flush_body()
+            items.append(
+                (line.page_num, float(line.read_order), "heading",
+                 (line.text.strip(), level))
+            )
+            continue
+
         if _starts_paragraph(line, prev, body_left):
             flush_body()
         if not cur_text:
@@ -425,6 +465,7 @@ def _build_from_outline(
         page_lines.sort(key=lambda l: l.y0)
 
     top_level = min(level for level, _, _ in outline)
+    body_size = _body_font_size(lines)
     consumed: set[int] = set()
     items: list[tuple[int, float, str, object]] = []
 
@@ -438,7 +479,8 @@ def _build_from_outline(
         items.append((pg, order, "heading", (htitle, level)))
 
     body_lines = [line for line in lines if id(line) not in consumed]
-    items.extend(_paragraph_items(body_lines))
+    # Detecta subtítulos de sección (1.1, 1.1.1…) no incluidos en el outline.
+    items.extend(_paragraph_items(body_lines, body_size=body_size))
 
     for vb in visual_blocks:
         order = _visual_order_key(vb.page_num, vb.y0, by_page)

@@ -1,0 +1,73 @@
+name: Convertir PDF a EPUB
+
+# Dos formas de disparar la conversión:
+#  1. Subir un PDF a la carpeta input/ (desde el celular, en github.com):
+#     se convierte solo al hacer el commit.
+#  2. Botón "Run workflow" (pestaña Actions): opcionalmente pegás una URL
+#     directa a un PDF y lo baja y convierte sin subirlo al repo.
+on:
+  workflow_dispatch:
+    inputs:
+      pdf_url:
+        description: "URL directa a un PDF (opcional). Si la dejás vacía, usa el/los PDF de la carpeta input/."
+        required: false
+        default: ""
+      images:
+        description: "Calidad de imágenes: equilibrado / calidad / minimo"
+        required: false
+        default: "equilibrado"
+  push:
+    paths:
+      - "input/**.pdf"
+
+permissions:
+  contents: read
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar el repositorio
+        uses: actions/checkout@v4
+
+      - name: Instalar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Obtener el PDF (si se pasó una URL)
+        run: |
+          mkdir -p input output
+          if [ -n "${{ github.event.inputs.pdf_url }}" ]; then
+            echo "Descargando PDF desde la URL…"
+            curl -L "${{ github.event.inputs.pdf_url }}" -o "input/desde-url.pdf"
+          fi
+
+      - name: Convertir a EPUB
+        run: |
+          shopt -s nullglob
+          preset="${{ github.event.inputs.images }}"
+          [ -z "$preset" ] && preset="equilibrado"
+          count=0
+          for pdf in input/*.pdf; do
+            count=$((count+1))
+            name="$(basename "${pdf%.pdf}")"
+            echo "::group::Convirtiendo $pdf"
+            python main.py -i "$pdf" -o "output/${name}.epub" --images "$preset"
+            echo "::endgroup::"
+          done
+          if [ "$count" -eq 0 ]; then
+            echo "No hay ningún PDF en input/ ni se pasó una URL."
+            echo "Subí un PDF a la carpeta input/ o usá 'Run workflow' con una URL."
+            exit 1
+          fi
+
+      - name: Publicar el/los EPUB
+        uses: actions/upload-artifact@v4
+        with:
+          name: epub
+          path: output/*.epub
+          if-no-files-found: error

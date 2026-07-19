@@ -103,6 +103,31 @@ def _drawing_regions(page: pymupdf.Page) -> list[pymupdf.Rect]:
     return [pymupdf.Rect(c) for c in clusters]
 
 
+def _drawing_path_rects(page: pymupdf.Page) -> list[pymupdf.Rect]:
+    """Bboxes de cada trazo vectorial de la página (para contar cuántos caen en
+    una región: una figura real tiene muchos; una caja de texto con borde,
+    pocos)."""
+    rects: list[pymupdf.Rect] = []
+    try:
+        for d in page.get_drawings():
+            r = pymupdf.Rect(d["rect"])
+            if r.width > 0 and r.height > 0:
+                rects.append(r)
+    except Exception:
+        pass
+    return rects
+
+
+def _paths_inside(region: pymupdf.Rect, path_rects: list[pymupdf.Rect]) -> int:
+    count = 0
+    for r in path_rects:
+        cx = (r.x0 + r.x1) / 2
+        cy = (r.y0 + r.y1) / 2
+        if region.x0 <= cx <= region.x1 and region.y0 <= cy <= region.y1:
+            count += 1
+    return count
+
+
 def _merge_overlapping(rects: list[pymupdf.Rect]) -> list[pymupdf.Rect]:
     """Fusiona rectángulos que se solapan/tocan para no recortar una misma
     figura en pedazos."""
@@ -183,6 +208,8 @@ def extract_visuals(
         table_list = []
 
     for t_idx, table in enumerate(table_list):
+        if not _is_real_table(table):
+            continue  # find_tables sobre-detecta: descartar tablas degeneradas
         rect = pymupdf.Rect(table.bbox)
         table_rects.append(rect)
         html = _table_to_html(table)
@@ -206,13 +233,16 @@ def extract_visuals(
     # bloque de texto en imagen. Por eso a los dibujos les exigimos que NO
     # estén cubiertos mayoritariamente por texto.
     raster_rects = _image_regions(page)
-    # Un dibujo con MUCHAS líneas de texto adentro (una caja de índice, un
-    # recuadro de contenido) es texto, no una figura: una figura real tiene
-    # pocas etiquetas. Se descarta por cobertura de texto o por nº de líneas.
+    # Distinguir una FIGURA de trazos (diagrama, curva, UML) de una CAJA DE
+    # TEXTO con borde (índice, recuadro): la figura tiene muchos trazos
+    # vectoriales; la caja de texto sólo el borde y alguna línea. Se cuenta el
+    # nº de trazos dentro de la región y se descarta si además está saturada
+    # de texto.
+    path_rects = _drawing_path_rects(page)
     drawing_rects = [
         r
         for r in _drawing_regions(page)
-        if _text_coverage(r, spans) < 0.18 and _text_line_count(r, spans) <= 6
+        if _paths_inside(r, path_rects) >= 6 and _text_coverage(r, spans) < 0.55
     ]
     fig_rects = _merge_overlapping(raster_rects + drawing_rects)
     for f_idx, rect in enumerate(fig_rects):
@@ -227,8 +257,14 @@ def extract_visuals(
         except Exception:
             continue
         caption, cap_spans = _find_caption(tuple(rect), spans)
-        for cs in cap_spans:
-            consumed_span_ids.add(id(cs))
+        cap_ids = {id(cs) for cs in cap_spans}
+        consumed_span_ids |= cap_ids
+        # El texto DENTRO de la figura (etiquetas de un diagrama, dígitos de un
+        # teclado, cardinalidades UML) ya quedó horneado en la imagen: se marca
+        # como consumido para que no aparezca además suelto en el cuerpo.
+        for sp in spans:
+            if id(sp) not in cap_ids and _point_inside(sp.bbox, rect):
+                consumed_span_ids.add(id(sp))
         blocks.append(
             Block(
                 kind="figure",
@@ -279,6 +315,26 @@ def extract_visuals(
     return blocks, consumed_span_ids
 
 
+def _is_real_table(table) -> bool:
+    """`find_tables()` sobre-detecta: crea 'tablas' de 1x1 o 1x2 con celdas
+    vacías a partir de texto que no es tabular. Una tabla real tiene al menos
+    2 filas y 2 columnas y suficientes celdas con contenido."""
+    try:
+        rows = table.extract()
+    except Exception:
+        return False
+    if len(rows) < 2:
+        return False
+    ncols = max((len(r) for r in rows), default=0)
+    if ncols < 2:
+        return False
+    non_empty = sum(
+        1 for r in rows for c in r if c is not None and str(c).strip()
+    )
+    total = len(rows) * ncols
+    return total > 0 and non_empty >= max(4, total * 0.4)
+
+
 def _table_to_html(table) -> str:
     """Convierte una tabla de PyMuPDF a <table> HTML simple."""
     try:
@@ -318,18 +374,6 @@ def _text_coverage(rect: pymupdf.Rect, spans: list[TextSpan]) -> float:
         if not inter.is_empty:
             covered += inter.width * inter.height
     return min(covered / area, 1.0)
-
-
-def _text_line_count(rect: pymupdf.Rect, spans: list[TextSpan]) -> int:
-    """Número de líneas de texto (bandas verticales) cuyo centro cae dentro de
-    `rect`. Muchas líneas => es un bloque de texto, no una figura."""
-    bands = set()
-    for s in spans:
-        cx = (s.bbox[0] + s.bbox[2]) / 2
-        cy = (s.bbox[1] + s.bbox[3]) / 2
-        if rect.x0 <= cx <= rect.x1 and rect.y0 <= cy <= rect.y1:
-            bands.add(round(s.bbox[1] / 4))
-    return len(bands)
 
 
 def _mostly_inside(inner: pymupdf.Rect, outer: pymupdf.Rect) -> bool:

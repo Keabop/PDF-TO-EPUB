@@ -42,7 +42,9 @@ def extract_raw_spans(pdf_path: str) -> dict[int, list[TextSpan]]:
             # en block_index para respetarlo aguas abajo.
             for line in block["lines"]:
                 for span in line["spans"]:
-                    text = span["text"]
+                    # Quita el carácter de reemplazo U+FFFD (�), que aparece
+                    # cuando un glifo de la fuente no se puede decodificar.
+                    text = span["text"].replace("�", "")
                     # Se conservan los spans de sólo-espacio: en títulos con
                     # tracking (letras espaciadas) el espacio entre palabras
                     # viene como span aparte; descartarlo pega las palabras

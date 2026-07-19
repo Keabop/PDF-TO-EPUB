@@ -195,6 +195,9 @@ def _dominant(weighted: list[tuple[float, int]]) -> float:
 # Subtítulo numerado: "1.1 …", "1.1.1 …" (al menos un punto entre números).
 _SECTION_NUM_RE = re.compile(r"^(\d+(?:\.\d+)+)\b")
 
+# Fragmento de sólo un número (hasta 3 dígitos): ruido, no prosa.
+_NUMBER_ONLY_RE = re.compile(r"^\d{1,3}$")
+
 
 def _subheading_level(line: "_Line", body_size: float) -> Optional[int]:
     """Detecta subtítulos de sección DENTRO de un capítulo (los que no vienen
@@ -424,7 +427,10 @@ def _paragraph_items(
 
     def flush_body() -> None:
         nonlocal cur_text, prev
-        if cur_text.strip() and cur_page is not None:
+        text = cur_text.strip()
+        # Descarta fragmentos que son sólo un número (número de capítulo suelto,
+        # referencia de página): nunca son prosa y el número ya va en el título.
+        if text and cur_page is not None and not _NUMBER_ONLY_RE.match(text):
             items.append((cur_page, cur_order, "paragraph", cur_text))
         cur_text = ""
         prev = None

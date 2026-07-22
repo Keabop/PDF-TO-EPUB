@@ -75,26 +75,49 @@ aside.margin-note {
     font-style: italic;
     color: #333;
 }
+pre.code {
+    font-family: monospace;
+    font-size: 0.85em;
+    line-height: 1.35;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    margin: 1em 0;
+    padding: 0.6em 0.8em;
+    background: #f4f4f4;
+    border: 1px solid #ddd;
+    border-radius: 3px;
+    overflow-x: auto;
+}
+pre.code code { font-family: inherit; }
 """
 
 
-def _nest_headings(headings: list[tuple[int, "epub.Link"]]):
-    """Arma un árbol de TOC a partir de (nivel, Link): 1.1.1 cuelga de 1.1,
-    que cuelga del capítulo. Devuelve la lista anidada que espera ebooklib
-    (un Link suelto si no tiene hijos, o (Link, [hijos]) si los tiene)."""
+def _build_toc(chapter_meta):
+    """Arma el TOC anidado de ebooklib. Anida los CAPÍTULOS por su nivel de
+    outline (parte > capítulo > subsección-que-es-capítulo) y, dentro de cada
+    capítulo, sus subtítulos (1.1, 1.1.1…). Devuelve la estructura anidada que
+    espera ebooklib (nodo suelto, o (nodo, [hijos]))."""
     root: list = []
-    stack: list[tuple[int, list]] = [(0, root)]
-    for level, link in headings:
-        while len(stack) > 1 and stack[-1][0] >= level:
-            stack.pop()
+    chap_stack: list[tuple[int, list]] = [(0, root)]
+    for clevel, item, subs in chapter_meta:
+        while len(chap_stack) > 1 and chap_stack[-1][0] >= clevel:
+            chap_stack.pop()
         children: list = []
-        stack[-1][1].append([link, children])
-        stack.append((level, children))
+        # Subtítulos internos, anidados entre sí por su propio nivel.
+        sub_stack: list[tuple[int, list]] = [(1, children)]
+        for slevel, link in subs:
+            while len(sub_stack) > 1 and sub_stack[-1][0] >= slevel:
+                sub_stack.pop()
+            sub_children: list = []
+            sub_stack[-1][1].append([link, sub_children])
+            sub_stack.append((slevel, sub_children))
+        chap_stack[-1][1].append([item, children])
+        chap_stack.append((clevel, children))
 
     def convert(entries: list):
         out = []
-        for link, children in entries:
-            out.append((link, convert(children)) if children else link)
+        for node, node_children in entries:
+            out.append((node, convert(node_children)) if node_children else node)
         return out
 
     return convert(root)
@@ -122,6 +145,10 @@ def _block_to_html(block: Block, embedded_images: dict[str, str]) -> str:
         # Nota al margen (cita, recuadro "Conceptos Clave", etc.): recuadro
         # visualmente separado del cuerpo.
         return f'<aside class="margin-note">{escape(block.text or "")}</aside>'
+
+    if block.kind == "code":
+        # Listado de código: monoespaciado, con saltos e indentación preservados.
+        return f'<pre class="code"><code>{escape(block.text or "")}</code></pre>'
 
     if block.kind == "formula" and block.image_path:
         src = embedded_images.get(block.image_path)
@@ -194,7 +221,8 @@ def build_epub(document: Document, output_path: str) -> None:
         embedded_images[path] = internal
 
     chapters_html: list[epub.EpubHtml] = []
-    toc: list = []
+    # metadatos por capítulo para armar el TOC anidado: (nivel, item, subs)
+    chapter_meta: list[tuple[int, epub.EpubHtml, list[tuple[int, epub.Link]]]] = []
     for c_idx, chapter in enumerate(document.chapters):
         file_name = f"chap_{c_idx:03d}_{_slug(chapter.title, str(c_idx))}.xhtml"
         parts = [f"<h1>{escape(chapter.title)}</h1>"]
@@ -232,14 +260,11 @@ def build_epub(document: Document, output_path: str) -> None:
         item.add_item(css)
         book.add_item(item)
         chapters_html.append(item)
+        chapter_meta.append((chapter.level, item, sub_headings))
 
-        # TOC anidado: el capítulo con sus subtítulos jerarquizados por nivel.
-        if sub_headings:
-            toc.append((item, _nest_headings(sub_headings)))
-        else:
-            toc.append(item)
-
-    book.toc = toc
+    # TOC anidado: capítulos jerarquizados por su nivel (parte > capítulo > …),
+    # y dentro de cada uno sus subtítulos.
+    book.toc = _build_toc(chapter_meta)
     book.add_item(epub.EpubNcx())
     book.add_item(epub.EpubNav())
     book.spine = ["nav", *chapters_html]

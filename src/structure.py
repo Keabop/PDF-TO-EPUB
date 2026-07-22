@@ -25,6 +25,17 @@ _PARAGRAPH_GAP_FACTOR = 0.6
 _INDENT_THRESHOLD = 6.0
 _OUTDENT_THRESHOLD = 10.0
 
+# Fuentes monoespaciadas => listados de código (se preservan tal cual).
+_MONO_HINTS = (
+    "mono", "courier", "consol", "typewriter", "menlo", "inconsolata",
+    "monaco", "cour",
+)
+
+
+def _is_mono_font(name: str) -> bool:
+    lower = name.lower()
+    return any(h in lower for h in _MONO_HINTS)
+
 
 _COLUMN_GAP = 60.0  # separación horizontal mínima entre columnas (puntos)
 
@@ -97,6 +108,7 @@ class _Line:
     block_index: int
     read_order: int
     is_aside: bool
+    is_mono: bool
 
 
 def _merge_spans_into_lines(spans: list[TextSpan]) -> list[_Line]:
@@ -108,13 +120,20 @@ def _merge_spans_into_lines(spans: list[TextSpan]) -> list[_Line]:
     def flush() -> None:
         if not buffer:
             return
-        # Colapsa espacios repetidos (quedan al conservar spans de sólo-espacio).
-        text = re.sub(r"\s+", " ", "".join(s.text for s in buffer)).strip()
+        raw = "".join(s.text for s in buffer)
+        mono_chars = sum(len(s.text) for s in buffer if _is_mono_font(s.font_name))
+        total_chars = sum(len(s.text) for s in buffer)
+        is_mono = total_chars > 0 and mono_chars >= total_chars / 2
+        # En código se preserva la indentación (no se colapsan los espacios);
+        # en texto normal sí se colapsan (quedan al conservar spans de espacio).
+        if is_mono:
+            text = raw.rstrip()
+        else:
+            text = re.sub(r"\s+", " ", raw).strip()
         if text:
             # Tamaño/negrita dominantes ponderados por longitud de texto.
             size = _dominant([(s.font_size, len(s.text)) for s in buffer])
             bold_chars = sum(len(s.text) for s in buffer if s.is_bold)
-            total_chars = sum(len(s.text) for s in buffer)
             lines.append(
                 _Line(
                     text=text,
@@ -127,6 +146,7 @@ def _merge_spans_into_lines(spans: list[TextSpan]) -> list[_Line]:
                     block_index=buffer[0].block_index,
                     read_order=min(s.read_order for s in buffer),
                     is_aside=buffer[0].is_aside,
+                    is_mono=is_mono,
                 )
             )
         buffer.clear()
@@ -320,8 +340,11 @@ def _build_from_font_sizes(
         kind, level = _classify(line, body_size, level_map)
         if kind == "heading":
             flush_body()
+            # El nivel superior (1 = fuente más grande) abre capítulo; los más
+            # profundos son anclas dentro del capítulo.
             items.append(
-                (line.page_num, float(line.read_order), "heading", (line.text, level))
+                (line.page_num, float(line.read_order), "heading",
+                 (line.text, level, level == 1))
             )
         else:
             body_run.append(line)
@@ -339,26 +362,25 @@ def _build_from_font_sizes(
 def _assemble_chapters(
     items: list[tuple[int, float, str, object]],
     title: str,
-    top_level: int = 1,
 ) -> Document:
-    """Recorre los items en orden y los reparte en capítulos: cada heading del
-    nivel superior (`top_level`) abre un capítulo nuevo; lo anterior al primero
-    va a un capítulo inicial con el título del documento. Los headings de nivel
-    más profundo quedan como bloques dentro del capítulo."""
+    """Recorre los items en orden y los reparte en capítulos: cada heading con
+    split=True abre un capítulo nuevo (con su nivel, para el TOC anidado); lo
+    anterior al primero va a un capítulo inicial. Los headings con split=False
+    quedan como anclas dentro del capítulo."""
     document = Document(title=title)
     current = Chapter(title=title)  # capítulo inicial (frontmatter / intro)
     order = 0
 
     for page_num, y0, kind, payload in items:
-        if kind == "heading" and payload[1] <= top_level:  # type: ignore[index]
+        if kind == "heading" and payload[2]:  # type: ignore[index]  split=True
             if current.blocks:
                 document.chapters.append(current)
-            current = Chapter(title=payload[0])  # type: ignore[index]
+            current = Chapter(title=payload[0], level=payload[1])  # type: ignore[index]
             order = 0
             continue
 
         if kind == "heading":
-            text, level = payload  # type: ignore[misc]
+            text, level, _ = payload  # type: ignore[misc]
             block = Block(
                 kind="heading",
                 order_index=order,
@@ -367,7 +389,7 @@ def _assemble_chapters(
                 text=text,
                 y0=y0,
             )
-        elif kind in ("paragraph", "aside"):
+        elif kind in ("paragraph", "aside", "code"):
             block = Block(
                 kind=kind,  # type: ignore[arg-type]
                 order_index=order,
@@ -424,6 +446,7 @@ def _paragraph_items(
     prev: Optional[_Line] = None
 
     aside_buf: list[_Line] = []
+    code_buf: list[_Line] = []
 
     def flush_body() -> None:
         nonlocal cur_text, prev
@@ -448,7 +471,31 @@ def _paragraph_items(
             )
         aside_buf.clear()
 
+    def flush_code() -> None:
+        if not code_buf:
+            return
+        # Listado de código: se preservan las líneas y la indentación tal cual.
+        text = "\n".join(l.text for l in code_buf)
+        if text.strip():
+            items.append(
+                (code_buf[0].page_num, code_buf[0].read_order, "code", text)
+            )
+        code_buf.clear()
+
     for line in lines:
+        # Código monoespaciado: se agrupa aparte, preservando saltos de línea.
+        if line.is_mono and not line.is_aside:
+            flush_body()
+            flush_aside()
+            if code_buf and (
+                code_buf[-1].page_num != line.page_num
+                and line.read_order - code_buf[-1].read_order > 3
+            ):
+                flush_code()
+            code_buf.append(line)
+            continue
+        flush_code()
+
         if line.is_aside:
             flush_body()
             if aside_buf and aside_buf[-1].page_num != line.page_num:
@@ -468,7 +515,7 @@ def _paragraph_items(
             flush_body()
             items.append(
                 (line.page_num, float(line.read_order), "heading",
-                 (line.text.strip(), level))
+                 (line.text.strip(), level, False))  # ancla, no nuevo capítulo
             )
             continue
 
@@ -481,6 +528,7 @@ def _paragraph_items(
 
     flush_body()
     flush_aside()
+    flush_code()
     return items
 
 
@@ -534,22 +582,23 @@ def _build_from_outline(
     for page_lines in by_page.values():
         page_lines.sort(key=lambda l: l.y0)
 
-    top_level = min(level for level, _, _ in outline)
     body_size = _body_font_size(lines)
     consumed: set[int] = set()
     items: list[tuple[int, float, str, object]] = []
 
+    # Cada entrada del outline abre un capítulo propio (split=True), sin importar
+    # su nivel; el nivel se guarda para anidar el TOC (parte > capítulo > …).
     for level, htitle, page in outline:
         match = _match_heading_line(htitle, page, by_page, consumed)
         if match is not None:
             pg, order = match
         else:
-            # Sin coincidencia: ubicar al tope de su página.
             pg, order = page, -1.0
-        items.append((pg, order, "heading", (htitle, level)))
+        items.append((pg, order, "heading", (htitle, level, True)))
 
     body_lines = [line for line in lines if id(line) not in consumed]
-    # Detecta subtítulos de sección (1.1, 1.1.1…) no incluidos en el outline.
+    # Subtítulos de sección (1.1, 1.1.1…) NO están en el outline: son anclas
+    # dentro del capítulo (split=False).
     items.extend(_paragraph_items(body_lines, body_size=body_size))
 
     for vb in visual_blocks:
@@ -557,4 +606,4 @@ def _build_from_outline(
         items.append((vb.page_num, order, "visual", vb))
 
     items.sort(key=lambda it: (it[0], it[1]))
-    return _assemble_chapters(items, title, top_level)
+    return _assemble_chapters(items, title)

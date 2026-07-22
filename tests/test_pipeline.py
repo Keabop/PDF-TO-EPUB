@@ -260,6 +260,58 @@ class PipelineTest(unittest.TestCase):
         lines = _merge_spans_into_lines(spans)
         self.assertTrue(any(l.text.startswith("Comprensión") for l in lines))
 
+    def test_code_listing_preserved(self):
+        def make(path):
+            doc = pymupdf.open()
+            p = doc.new_page(width=W, height=H)
+            p.insert_text((60, 80), "Ejemplo de codigo", fontsize=16)
+            code = ("class Hola {\n"
+                    "    static void Main() {\n"
+                    "        System.out.println(\"hola\");\n"
+                    "    }\n"
+                    "}")
+            p.insert_text((70, 120), code, fontsize=10, fontname="cour")
+            doc.save(path)
+            doc.close()
+
+        epub = self._convert(make)
+        _, chaps = _read_chapter_texts(epub)
+        html = "\n".join(chaps.values())
+        self.assertIn('<pre class="code">', html)
+        # la indentación (espacios al inicio de línea) se conserva
+        import html as _h
+        pre = re.search(r'<pre class="code"><code>(.*?)</code></pre>', html, re.S)
+        self.assertIsNotNone(pre)
+        code_text = _h.unescape(pre.group(1))
+        self.assertIn("    static void Main", code_text)  # 4 espacios
+        self.assertIn("\n", code_text)  # saltos de línea preservados
+
+    def test_nested_outline_every_entry_is_chapter(self):
+        def make(path):
+            doc = pymupdf.open()
+            for i in range(5):
+                p = doc.new_page(width=W, height=H)
+                p.insert_text((60, 90), f"Seccion {i}", fontsize=18)
+                p.insert_textbox(pymupdf.Rect(60, 120, 535, 700), BODY * 4, fontsize=11)
+            # outline anidado: 1 título (nivel 1), 1 parte (nivel 2), 3 caps (nivel 3)
+            doc.set_toc([
+                [1, "LIBRO", 1],
+                [2, "PARTE I", 2],
+                [3, "Capitulo A", 3],
+                [3, "Capitulo B", 4],
+                [3, "Capitulo C", 5],
+            ])
+            doc.save(path)
+            doc.close()
+
+        epub = self._convert(make)
+        z, chaps = _read_chapter_texts(epub)
+        # cada entrada del outline -> su propio archivo (no 1 solo capítulo)
+        self.assertGreaterEqual(len(chaps), 5)
+        nav = z.read("EPUB/nav.xhtml").decode("utf-8", "ignore")
+        for t in ("LIBRO", "PARTE I", "Capitulo A", "Capitulo C"):
+            self.assertIn(t, nav)
+
     def test_empty_pages_no_crash(self):
         def make(path):
             doc = pymupdf.open()

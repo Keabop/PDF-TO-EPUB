@@ -24,7 +24,8 @@ class TextSpan:
 @dataclass
 class Block:
     kind: Literal[
-        "heading", "paragraph", "figure", "formula", "table", "caption", "aside"
+        "heading", "paragraph", "figure", "formula", "table", "caption",
+        "aside", "code",
     ]
     order_index: int
     page_num: int
@@ -41,6 +42,7 @@ class Block:
 class Chapter:
     title: str
     blocks: list[Block] = field(default_factory=list)
+    level: int = 1   # nivel en el índice (para el TOC anidado: parte > capítulo)
 
 
 @dataclass
